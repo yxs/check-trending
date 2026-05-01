@@ -42,6 +42,7 @@ DETAIL_KEYS = {
     "Visa Type",
     "Years in Usa",
 }
+DATA_FILE_PATTERN = re.compile(r"checkee_cases_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.json$")
 
 
 @dataclass(frozen=True)
@@ -226,6 +227,30 @@ def parse_int(value: str) -> int | None:
         return None
 
 
+def find_latest_normalized_source(output_dir: Path) -> Path | None:
+    candidates = [path for path in output_dir.glob("checkee_cases_*_to_*.json") if DATA_FILE_PATTERN.match(path.name)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def get_max_known_case_number(output_dir: Path) -> int:
+    latest_source = find_latest_normalized_source(output_dir)
+    if latest_source is None:
+        return 0
+    try:
+        records = json.loads(latest_source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return 0
+    case_numbers: list[int] = []
+    for record in records:
+        try:
+            case_numbers.append(int(str(record.get("case_number", "")).strip()))
+        except ValueError:
+            continue
+    return max(case_numbers, default=0)
+
+
 class PoliteHttpClient:
     def __init__(self, delay_seconds: float, jitter_seconds: float, retries: int, timeout: int) -> None:
         self.delay_seconds = delay_seconds
@@ -313,6 +338,8 @@ def crawl_detail_range(
     detail_dir.mkdir(parents=True, exist_ok=True)
 
     client = PoliteHttpClient(delay_seconds, jitter_seconds, retries, timeout)
+    max_known_case = get_max_known_case_number(output_dir)
+    print(f"max_known_case={max_known_case}", flush=True)
     records: list[CaseRecord] = []
     total = case_number_end - case_number_start + 1
 
@@ -320,7 +347,23 @@ def crawl_detail_range(
         case_number = str(case_number_int)
         detail_html_path = detail_dir / f"{case_number}.html"
         detail_url = f"{BASE_URL}/personal_detail.php?casenum={case_number}"
-        detail_html = read_or_fetch(detail_html_path, detail_url, client)
+        cached_html = detail_html_path.read_text(encoding="utf-8", errors="ignore") if detail_html_path.exists() else None
+        cached_record = None
+        if cached_html is not None:
+            cached_detail = parse_detail_page(cached_html, case_number)
+            cached_record = case_from_detail(cached_detail, start_date, end_date)
+        should_refresh_pending = cached_record is not None and cached_record.status not in {"Clear", "Reject"}
+        should_probe_frontier = case_number_int > max_known_case
+        force_fetch = cached_html is None or should_refresh_pending or should_probe_frontier
+        try:
+            detail_html = read_or_fetch(detail_html_path, detail_url, client, force_fetch=force_fetch)
+        except RuntimeError:
+            if cached_html is not None:
+                detail_html = cached_html
+                print(f"using cached detail for case={case_number} after fetch failure", flush=True)
+            else:
+                print(f"skipped case={case_number} because fetch failed and no cache was found", flush=True)
+                continue
         detail = parse_detail_page(detail_html, case_number)
         record = case_from_detail(detail, start_date, end_date)
         if record is not None:

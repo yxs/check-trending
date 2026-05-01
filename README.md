@@ -48,6 +48,9 @@ npm run dev
 ## 数据更新流程
 
 - 自动任务：`Daily Data Refresh` 工作流每天 UTC 19:00 触发（北京时间次日 03:00）。
-- 更新步骤：运行 `checkee_scraper` 生成 `data/checkee` 数据，再运行 `scripts/build_web_data.py` 更新 `public/data/app-data.json`。
+- 更新步骤：
+  - 以当前数据中的最大 `case_number` 为基准，额外向上探测一段区间（默认 40）查找新 case。
+  - 对已收录但仍为非 Clear 的 case 做强制刷新，及时捕捉 Pending -> Clear 的状态变化。
+  - 运行 `scripts/build_web_data.py` 更新 `public/data/app-data.json`。
 - 自动提交：当数据有变更时，工作流会自动 commit 并 push 到 `main`。
-- 手动触发：可在 GitHub Actions 页面手动触发该工作流，并可覆盖 `end_date`、`case_number_start`、`case_number_end`。
+- 手动触发：可在 GitHub Actions 页面手动触发该工作流，并可覆盖 `end_date`、`probe_count`。
