@@ -39,22 +39,22 @@ jobs:
           fi
           CASE_NUMBER_START="842700"
           MAX_KNOWN_CASE="$(python - <<'PY'
-import json
-from pathlib import Path
-import re
+          import json
+          from pathlib import Path
+          import re
 
-output_dir = Path("data/checkee")
-pattern = re.compile(r"checkee_cases_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.json$")
-candidates = [path for path in output_dir.glob("checkee_cases_*_to_*.json") if pattern.match(path.name)]
-if not candidates:
-    print(845700)
-    raise SystemExit(0)
-latest = max(candidates, key=lambda path: path.stat().st_mtime)
-records = json.loads(latest.read_text(encoding="utf-8"))
-case_numbers = [int(str(record.get("case_number", "0"))) for record in records if str(record.get("case_number", "")).isdigit()]
-print(max(case_numbers) if case_numbers else 845700)
-PY
-)"
+          output_dir = Path("data/checkee")
+          pattern = re.compile(r"checkee_cases_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.json$")
+          candidates = [path for path in output_dir.glob("checkee_cases_*_to_*.json") if pattern.match(path.name)]
+          if not candidates:
+              print(845700)
+              raise SystemExit(0)
+          latest = max(candidates, key=lambda path: path.stat().st_mtime)
+          records = json.loads(latest.read_text(encoding="utf-8"))
+          case_numbers = [int(str(record.get("case_number", "0"))) for record in records if str(record.get("case_number", "")).isdigit()]
+          print(max(case_numbers) if case_numbers else 845700)
+          PY
+          )"
           CASE_NUMBER_END="$((MAX_KNOWN_CASE + PROBE_COUNT))"
           echo "END_DATE=$END_DATE" >> "$GITHUB_ENV"
           echo "CASE_NUMBER_START=$CASE_NUMBER_START" >> "$GITHUB_ENV"
