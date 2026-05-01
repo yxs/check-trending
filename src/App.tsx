@@ -4,9 +4,7 @@ import type { ReactNode } from 'react';
 import {
   buildCurrentStatus,
   buildDailyClearSeries,
-  findHighTideRuns,
   findLowTideRuns,
-  findWaveEvents,
   filterCases,
   getDateTickIndexes,
   getRegionGroup,
@@ -78,6 +76,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(initialViewState.filters);
   const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(initialViewState.lowTideThreshold);
+  const [mobileFiltersExpanded, setMobileFiltersExpanded] = useState(false);
   const [dayWidth, setDayWidth] = useState(8);
   const [route, setRoute] = useState(window.location.pathname);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
@@ -174,15 +173,9 @@ export default function App() {
       .slice(0, 5),
     [clearSeries, lowTideThreshold],
   );
-  const highTideRuns = useMemo(() => findHighTideRuns(clearSeries, 8, 3).slice(0, 5), [clearSeries]);
-  const allLowTideRuns = useMemo(() => findLowTideRuns(clearSeries, lowTideThreshold, 5), [clearSeries, lowTideThreshold]);
   const currentStatus = useMemo(
     () => buildCurrentStatus(clearSeries, lowTideThreshold, 5),
     [clearSeries, lowTideThreshold],
-  );
-  const waveEvents = useMemo(
-    () => findWaveEvents(allLowTideRuns, highTideRuns, 10).slice(0, 3),
-    [allLowTideRuns, highTideRuns],
   );
   const selectedCases = useMemo(() => {
     if (!filters.selectedDate) {
@@ -198,6 +191,16 @@ export default function App() {
       });
   }, [filteredCases, filters.selectedDate]);
   const metrics = useMemo(() => buildMetrics(filteredCases), [filteredCases]);
+  const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters]);
+  const mobileFilterLabel = useMemo(() => {
+    if (mobileFiltersExpanded) {
+      return '收起筛选条件';
+    }
+    if (activeFilterCount === 0) {
+      return '展开筛选条件';
+    }
+    return `展开筛选条件（已选 ${activeFilterCount}）`;
+  }, [activeFilterCount, mobileFiltersExpanded]);
 
   if (route === DONATE_PATH) {
     return <DonatePage onNavigateHome={() => navigate('/')} />;
@@ -218,11 +221,11 @@ export default function App() {
   return (
     <main className="page">
       <header className="hero">
-        <div>
+        <div className="hero-main">
           <p className="eyebrow">Check Trending</p>
           <h1>签证 Check 出签趋势</h1>
           <p className="lede">
-            基于 Checkee 公开样本，观察每日 Clear 节奏、签证类型差异与等待时长分布。
+            基于 Checkee 公开样本，观察每日 Clear 节奏与等待时长变化。
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
@@ -230,8 +233,8 @@ export default function App() {
               event.preventDefault();
               navigate(DONATE_PATH);
             }}>Donate</a>
+            <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
           </nav>
-          <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
         </div>
         <div className="freshness">
           <span>数据范围</span>
@@ -240,7 +243,22 @@ export default function App() {
         </div>
       </header>
 
-      <section className="filters" aria-label="趋势筛选">
+      <div className="filters-mobile-control">
+        <button
+          type="button"
+          className="filters-toggle"
+          aria-controls="trend-filters"
+          aria-expanded={mobileFiltersExpanded}
+          onClick={() => setMobileFiltersExpanded((current) => !current)}
+        >
+          {mobileFilterLabel}
+        </button>
+      </div>
+      <section
+        id="trend-filters"
+        className={mobileFiltersExpanded ? 'filters mobile-expanded' : 'filters'}
+        aria-label="趋势筛选"
+      >
         <Select label="签证组" value={filters.visaGroup} onChange={(visaGroup) => updateFilters({ visaGroup, visaSubtype: getDefaultVisaSubtype(visaGroup) })}>
           <option value="all">全部</option>
           <option value="work">工作签 H/L/O</option>
@@ -290,11 +308,7 @@ export default function App() {
         <Metric label="P90 等待" value={`${metrics.p90Wait} 天`} />
       </section>
 
-      <section className="status-grid status-grid-single">
-        <CurrentStatusCard status={currentStatus} threshold={lowTideThreshold} />
-      </section>
-
-      <section className="panel">
+      <section className="panel chart-panel">
         <div className="section-heading">
           <div>
             <h2>每日 Clear 趋势</h2>
@@ -330,16 +344,6 @@ export default function App() {
         />
       </section>
 
-      <section className="panel">
-        <div className="section-heading">
-          <div>
-            <h2>低潮与回升配对</h2>
-            <p>将低潮期与之后 10 天内出现的高峰期配对，用于观察是否出现阶段性集中出签。</p>
-          </div>
-        </div>
-        <WaveEventList events={waveEvents} />
-      </section>
-
       <section className="split">
         <div className="panel">
           <h2>选中日期 Clear 详情</h2>
@@ -349,18 +353,12 @@ export default function App() {
             <p className="muted">点击上方任意日期柱子查看当天 Clear 记录，列表会优先展示含 Note 的样本。</p>
           )}
         </div>
-        <div className="panel">
-          <div className="compact-heading">
-            <h2>低速区间</h2>
-            <Select label="阈值" value={String(lowTideThreshold)} onChange={(value) => setLowTideThreshold(parseLowTideThreshold(value))}>
-              <option value="1">≤ 1 个/天</option>
-              <option value="2">≤ 2 个/天</option>
-              <option value="5">≤ 5 个/天</option>
-            </Select>
-          </div>
-          <p className="muted">当前筛选下，连续 5 天及以上每日 Clear 不超过 {lowTideThreshold} 个的区间，可用于识别整体节奏偏慢的阶段。</p>
-          <LowTideList runs={lowTideRuns} />
-        </div>
+        <RhythmPanel
+          status={currentStatus}
+          lowTideRuns={lowTideRuns}
+          threshold={lowTideThreshold}
+          onThresholdChange={(value) => setLowTideThreshold(parseLowTideThreshold(value))}
+        />
       </section>
       <footer className="footer-note" aria-label="数据来源与外部工具">
         <span className="footer-title">数据来源与工具</span>
@@ -407,30 +405,19 @@ function ThemeSwitch({
   preference: ThemePreference;
   onChange: (next: ThemePreference) => void;
 }) {
+  const nextPreference = getNextThemePreference(preference);
+  const label = getThemePreferenceLabel(preference);
+  const nextLabel = getThemePreferenceLabel(nextPreference);
   return (
-    <div className="theme-switch" role="group" aria-label="主题切换">
-      <button
-        type="button"
-        className={preference === 'system' ? 'theme-chip active' : 'theme-chip'}
-        onClick={() => onChange('system')}
-      >
-        跟随系统
-      </button>
-      <button
-        type="button"
-        className={preference === 'light' ? 'theme-chip active' : 'theme-chip'}
-        onClick={() => onChange('light')}
-      >
-        浅色
-      </button>
-      <button
-        type="button"
-        className={preference === 'dark' ? 'theme-chip active' : 'theme-chip'}
-        onClick={() => onChange('dark')}
-      >
-        深色
-      </button>
-    </div>
+    <button
+      type="button"
+      className="theme-icon-button"
+      onClick={() => onChange(nextPreference)}
+      aria-label={`主题：${label}，点击切换到${nextLabel}`}
+      title={`主题：${label}，点击切换到${nextLabel}`}
+    >
+      {getThemePreferenceIcon(preference)}
+    </button>
   );
 }
 
@@ -466,21 +453,39 @@ function LoadingSkeleton() {
   );
 }
 
-function CurrentStatusCard({ status, threshold }: { status: CurrentStatus; threshold: LowTideThreshold }) {
+function RhythmPanel({
+  lowTideRuns,
+  onThresholdChange,
+  status,
+  threshold,
+}: {
+  lowTideRuns: ReturnType<typeof findLowTideRuns>;
+  onThresholdChange: (value: string) => void;
+  status: CurrentStatus;
+  threshold: LowTideThreshold;
+}) {
   return (
-    <section className="panel status-card">
-      <h2>近期节奏</h2>
+    <section className="panel rhythm-panel">
+      <div className="compact-heading">
+        <h2>近期节奏与低速区间</h2>
+        <Select label="阈值" value={String(threshold)} onChange={onThresholdChange}>
+          <option value="1">≤ 1 个/天</option>
+          <option value="2">≤ 2 个/天</option>
+          <option value="5">≤ 5 个/天</option>
+        </Select>
+      </div>
       {status.currentLow ? (
-        <p className="status-title">当前处于低速区：已持续 {status.currentLow.days} 天</p>
+        <p className="rhythm-title">已连续低速 {status.currentLow.days} 天</p>
       ) : (
-        <p className="status-title">当前不在低速区</p>
+        <p className="rhythm-title">近期不在低速区</p>
       )}
       <div className="status-stats">
         <span>近 7 天 Clear {status.clears7d} 个</span>
         <span>近 14 天 Clear {status.clears14d} 个</span>
         <span>近 30 天 Clear {status.clears30d} 个</span>
       </div>
-      <p className="muted">低速区定义：连续 5 天及以上，每日 Clear 不超过 {threshold} 个。</p>
+      <p className="muted">连续 5 天及以上，每日 Clear 不超过 {threshold} 个。</p>
+      <LowTideList runs={lowTideRuns} />
     </section>
   );
 }
@@ -495,35 +500,6 @@ function LowTideList({ runs }: { runs: ReturnType<typeof findLowTideRuns> }) {
         <div className="low-tide" key={`${run.startDate}-${run.endDate}`}>
           <strong>{run.startDate} 至 {run.endDate}</strong>
           <span>{run.days} 天，合计 Clear {run.totalClears} 个</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function WaveEventList({ events }: { events: ReturnType<typeof findWaveEvents> }) {
-  if (events.length === 0) {
-    return <p className="muted">当前筛选下还没有识别到低潮后的集中出签。</p>;
-  }
-  return (
-    <div className="wave-event-list">
-      {events.map((event) => (
-        <div className="wave-event" key={`${event.low.startDate}-${event.high.startDate}`}>
-          <div>
-            <span>低潮期</span>
-            <strong>{event.low.startDate} 至 {event.low.endDate}</strong>
-            <small>{event.low.days} 天，Clear {event.low.totalClears} 个</small>
-          </div>
-          <div>
-            <span>高峰期</span>
-            <strong>{event.high.startDate} 至 {event.high.endDate}</strong>
-            <small>{event.high.days} 天，Clear {event.high.totalClears} 个</small>
-          </div>
-          <div>
-            <span>间隔</span>
-            <strong>{event.gapDays} 天</strong>
-            <small>低潮结束后</small>
-          </div>
         </div>
       ))}
     </div>
@@ -785,6 +761,59 @@ function getDefaultVisaSubtype(visaGroup: VisaGroup): VisaSubtype {
 
 function getVisaSubtypeOptions(visaGroup: VisaGroup) {
   return VISA_SUBTYPE_OPTIONS[visaGroup];
+}
+
+function countActiveFilters(filters: Filters): number {
+  let count = 0;
+  if (filters.visaGroup !== DEFAULT_FILTERS.visaGroup) {
+    count += 1;
+  }
+  if (filters.visaSubtype !== DEFAULT_FILTERS.visaSubtype) {
+    count += 1;
+  }
+  if (filters.checkDepth !== DEFAULT_FILTERS.checkDepth) {
+    count += 1;
+  }
+  if (filters.noteCohort !== DEFAULT_FILTERS.noteCohort) {
+    count += 1;
+  }
+  if (filters.region !== DEFAULT_FILTERS.region) {
+    count += 1;
+  }
+  if (filters.timeRangeDays !== DEFAULT_FILTERS.timeRangeDays) {
+    count += 1;
+  }
+  return count;
+}
+
+function getNextThemePreference(preference: ThemePreference): ThemePreference {
+  if (preference === 'system') {
+    return 'light';
+  }
+  if (preference === 'light') {
+    return 'dark';
+  }
+  return 'system';
+}
+
+function getThemePreferenceLabel(preference: ThemePreference): string {
+  if (preference === 'system') {
+    return '跟随系统';
+  }
+  if (preference === 'light') {
+    return '浅色';
+  }
+  return '深色';
+}
+
+function getThemePreferenceIcon(preference: ThemePreference): string {
+  if (preference === 'system') {
+    return '◐';
+  }
+  if (preference === 'light') {
+    return '☀';
+  }
+  return '☾';
 }
 
 type AxisLabel = {
