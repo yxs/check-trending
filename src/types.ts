@@ -22,7 +22,6 @@ export type NoteCohort = 'all' | 'withNote' | 'withoutNote';
 export type RegionFilter = 'all' | 'mainland' | 'overseas' | (string & {});
 export type TimeRangeDays = 'all' | 30 | 60 | 90 | 180;
 export type LowTideThreshold = 1 | 2 | 5;
-export type ChartWindowDays = number;
 
 export interface Filters {
   checkDepth: CheckDepth;
@@ -71,11 +70,6 @@ export interface CurrentStatus {
   clears7d: number;
   clears14d: number;
   clears30d: number;
-}
-
-export interface ForecastPoint {
-  date: string;
-  value: number;
 }
 
 export interface WebDataSummary {
