@@ -9,11 +9,8 @@ on:
       end_date:
         description: "Crawl end date (YYYY-MM-DD), defaults to today UTC"
         required: false
-      case_number_start:
-        description: "Start case number, defaults to 842700"
-        required: false
-      case_number_end:
-        description: "End case number, defaults to 845700"
+      probe_count:
+        description: "How many case numbers above current max to probe (default: 40)"
         required: false
 
 permissions:
@@ -33,20 +30,38 @@ jobs:
       - name: Resolve crawl parameters
         run: |
           END_DATE="${{ github.event.inputs.end_date }}"
-          CASE_NUMBER_START="${{ github.event.inputs.case_number_start }}"
-          CASE_NUMBER_END="${{ github.event.inputs.case_number_end }}"
+          PROBE_COUNT="${{ github.event.inputs.probe_count }}"
           if [ -z "$END_DATE" ]; then
             END_DATE="$(date -u +%F)"
           fi
-          if [ -z "$CASE_NUMBER_START" ]; then
-            CASE_NUMBER_START="842700"
+          if [ -z "$PROBE_COUNT" ]; then
+            PROBE_COUNT="40"
           fi
-          if [ -z "$CASE_NUMBER_END" ]; then
-            CASE_NUMBER_END="845700"
-          fi
+          CASE_NUMBER_START="842700"
+          MAX_KNOWN_CASE="$(python - <<'PY'
+import json
+from pathlib import Path
+import re
+
+output_dir = Path("data/checkee")
+pattern = re.compile(r"checkee_cases_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.json$")
+candidates = [path for path in output_dir.glob("checkee_cases_*_to_*.json") if pattern.match(path.name)]
+if not candidates:
+    print(845700)
+    raise SystemExit(0)
+latest = max(candidates, key=lambda path: path.stat().st_mtime)
+records = json.loads(latest.read_text(encoding="utf-8"))
+case_numbers = [int(str(record.get("case_number", "0"))) for record in records if str(record.get("case_number", "")).isdigit()]
+print(max(case_numbers) if case_numbers else 845700)
+PY
+)"
+          CASE_NUMBER_END="$((MAX_KNOWN_CASE + PROBE_COUNT))"
           echo "END_DATE=$END_DATE" >> "$GITHUB_ENV"
           echo "CASE_NUMBER_START=$CASE_NUMBER_START" >> "$GITHUB_ENV"
           echo "CASE_NUMBER_END=$CASE_NUMBER_END" >> "$GITHUB_ENV"
+          echo "PROBE_COUNT=$PROBE_COUNT" >> "$GITHUB_ENV"
+          echo "MAX_KNOWN_CASE=$MAX_KNOWN_CASE" >> "$GITHUB_ENV"
+          echo "Resolved range: ${CASE_NUMBER_START}-${CASE_NUMBER_END} (max_known=${MAX_KNOWN_CASE}, probe=${PROBE_COUNT})"
 
       - name: Refresh Checkee detail-range dataset
         run: |
@@ -56,9 +71,9 @@ jobs:
             --end-date "$END_DATE" \
             --case-number-start "$CASE_NUMBER_START" \
             --case-number-end "$CASE_NUMBER_END" \
-            --delay-seconds 0 \
-            --jitter-seconds 0 \
-            --retries 1 \
+            --delay-seconds 0.85 \
+            --jitter-seconds 0.55 \
+            --retries 2 \
             --timeout 30
 
       - name: Build web data payload

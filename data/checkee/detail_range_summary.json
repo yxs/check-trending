@@ -1,10 +1,10 @@
 {
-  "case_count": 1879,
+  "case_count": 1884,
   "case_number_end": 845700,
   "case_number_start": 842700,
   "end_date": "2026-05-01",
-  "generated_at": "2026-05-01T09:27:54",
-  "note_count": 1081,
+  "generated_at": "2026-05-01T04:32:16",
+  "note_count": 1084,
   "source": "personal_detail.php case-number range crawl",
   "start_date": "2025-07-01"
 }
