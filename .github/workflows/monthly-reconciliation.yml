@@ -1,20 +1,26 @@
-name: Daily Data Refresh
+name: Monthly Reconciliation
 
 on:
   schedule:
-    # 03:00 Beijing (UTC+8) every day → 19:00 UTC the previous day
-    - cron: "0 19 * * *"
+    # 03:00 Beijing (UTC+8) on the 16th of each month → 19:00 UTC on the 15th.
+    # Runs after the daily workflow stops including the previous month in its
+    # buffer window (day-of-month <= 15), so the prior month's case IDs are
+    # fully settled before the brute-force ID scan begins.
+    - cron: "0 19 15 * *"
   workflow_dispatch:
     inputs:
       end_date:
         description: "Crawl end date (YYYY-MM-DD), defaults to today UTC"
+        required: false
+      probe_count:
+        description: "How many case numbers above current max to scan (default: 40)"
         required: false
 
 permissions:
   contents: write
 
 jobs:
-  refresh-data:
+  reconcile:
     runs-on: ubuntu-latest
 
     steps:
@@ -33,19 +39,25 @@ jobs:
       - name: Resolve crawl parameters
         run: |
           END_DATE="${{ github.event.inputs.end_date }}"
+          PROBE_COUNT="${{ github.event.inputs.probe_count }}"
           if [ -z "$END_DATE" ]; then
             END_DATE="$(date -u +%F)"
           fi
+          if [ -z "$PROBE_COUNT" ]; then
+            PROBE_COUNT="40"
+          fi
           echo "END_DATE=$END_DATE" >> "$GITHUB_ENV"
-          echo "Resolved daily refresh end_date=$END_DATE"
+          echo "PROBE_COUNT=$PROBE_COUNT" >> "$GITHUB_ENV"
+          echo "Resolved monthly reconciliation end_date=$END_DATE probe=$PROBE_COUNT"
 
-      - name: Refresh dataset (current month + buffer)
+      - name: Refresh + reconcile (full range, brute-force ID scan)
         run: |
           xvfb-run -a python -m check_trending.checkee_scraper \
-            --mode daily \
+            --mode reconcile \
             --start-date 2025-07-01 \
             --end-date "$END_DATE" \
             --monthly-fetcher browser \
+            --probe-count "$PROBE_COUNT" \
             --delay-seconds 0.85 \
             --jitter-seconds 0.55 \
             --retries 2 \
@@ -64,5 +76,5 @@ jobs:
             exit 0
           fi
           git add data/checkee public/data/app-data.json
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update Checkee data for $END_DATE"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Reconciliation refresh for $END_DATE"
           git push
