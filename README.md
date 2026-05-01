@@ -47,38 +47,42 @@ npm run dev
 
 ## 数据更新流程
 
-数据更新拆成两条路径：
-
-### 主路径：`Daily Data Refresh`
+### 主路径：`Daily Data Refresh`（CI 自动）
 
 - 调度：每天 03:00 北京时间（cron `0 19 * * *`）。
-- Case ID 发现：只抓"还可能新增 ID"的月份。
-  - day-of-month ≤ 15：抓**当前月 + 上个月**（处理迟到上报的 buffer 窗口）。
-  - day-of-month > 15：只抓**当前月**。
-  - 历史月份的 case ID 列表从 `data/checkee/monthly_case_ids.json` manifest 直接读取，不再 fetch。
-- Detail 更新：
-  - 当前月抓到的 case → fetch detail。
-  - canonical 中所有非终态（不在 `Clear` / `Reject`）的 case → 强制 fetch detail，更新 status / note / complete_date。
-  - 终态 case → 不动（小概率会变，留给月度校准抽查）。
-- Merge：将本轮新 records 按 `case_number` merge 进 `data/checkee/checkee_cases.json`，保留历史月份不在本轮 scope 的 case。
-- Cloudflare：`main.php` 受 Cloudflare managed JS challenge 保护，在 GitHub Actions 上通过 `xvfb-run` + `patchright`（Playwright 的 stealth fork）+ 系统 Chrome 解 challenge。详情页未启用 challenge，仍走 `urllib`。
+- 模式：`--source detail-range`，扫描 case_number 区间 `[842700, max_known + probe_count]`。
+- 行为：
+  - **Frontier probe**（`case_number > max_known`）：上探 `probe_count`（默认 40）个号段，发现新 case。Checkee 的 case_number 严格自增，新 case 必落在这段。
+  - **Pending refresh**：cache 命中且 status ∈ {`Clear`, `Reject`} 的 case 跳过；否则 force-fetch detail，捕捉 Pending → Clear 的状态翻转、Note 增删。
+  - **Merge**：本轮 records 按 `case_number` merge 进 `data/checkee/checkee_cases.json`，不会因为 fetch 失败把已收录的 case 从 canonical 丢出去。
+- 不依赖 Cloudflare：detail 页 (`personal_detail.php`) 未启用 challenge，纯 `urllib`，无需 patchright / xvfb / chromium。CI 跑 ~6 min 完成。
 
-### 校准路径：`Monthly Reconciliation`
+### 次要路径：月度对账（本地手动跑）
 
-- 调度：每月 16 日 03:00 北京时间（cron `0 19 15 * *`）。这一天上一月已不在主路径 buffer 窗口内，case ID 完全 frozen，适合做 ID 级对账。
-- 流程：先跑主路径（manifest + pending refresh + merge），再做 detail-range 暴力扫描——按 case_number 区间 `[min(canonical), max(canonical) + probe_count]` 逐个 fetch detail，验证哪些 case 落在日期范围内。
-- 输出对账报告 `data/checkee/reports/reconciliation/YYYY-MM.json`，记录 monthly_only / brute_force_only / matched 等指标，并把 brute_force_only（月度漏列但 detail 页存在）的 case 自动 merge 进 canonical。
-- 报告按月归档，永久保留，供以后排查。
+`main.php?dispdate=YYYY-MM` 月度页面被 Cloudflare managed JS challenge 保护，GitHub Actions 的 datacenter IP 上无法稳定通过（实测 patchright + xvfb + bundled stealth chromium 都被拦）。所以这条路径**只在本地（residential IP）手动跑**，需要时执行：
+
+```bash
+pip install patchright
+patchright install chromium --no-shell
+python -m check_trending.checkee_scraper \
+  --mode reconcile \
+  --start-date 2025-07-01 \
+  --end-date "$(date -u +%F)" \
+  --monthly-fetcher browser \
+  --probe-count 40
+```
+
+会更新 `data/checkee/monthly_case_ids.json` manifest、写一份 `data/checkee/reports/reconciliation/YYYY-MM.json` 对账报告，并把 `brute_force_only`（detail 页存在但月度页面没列出）的 case 自动 merge 进 canonical。频率建议 1 个月 1 次。
 
 ### 数据文件组织
 
-- `data/checkee/checkee_cases.json` — 所有 case 的 canonical 数据，前端构建源。
-- `data/checkee/monthly_case_ids.json` — 每月的 case ID manifest，避免重复抓已 frozen 月份。
-- `data/checkee/raw/details/*.html` — detail 页面缓存，已自动 trim 到详情表格区域，去掉导航、脚本、统计等无关片段。
-- `data/checkee/reports/reconciliation/YYYY-MM.json` — 月度对账报告归档。
-- `data/checkee/crawl_summary.json` — canonical 数据集的最新 summary（被 `scripts/build_web_data.py` 校验）。
+- `data/checkee/checkee_cases.json` — 所有 case 的 canonical 数据，前端构建源。每天 daily 主路径更新。
+- `data/checkee/monthly_case_ids.json` — 每月的 case ID manifest（来自 `main.php` 月度页解析）。仅在本地手动跑次要路径时刷新。
+- `data/checkee/raw/details/*.html` — detail 页面缓存，已 trim 到详情表格片段。
+- `data/checkee/reports/reconciliation/YYYY-MM.json` — 月度对账报告归档（仅在跑次要路径时生成）。
+- `data/checkee/crawl_summary.json` — canonical 数据集 summary，被 `scripts/build_web_data.py` 校验。
 
 ### 自动提交
 
-- 两个工作流都会在数据有变化时自动 `commit` + `push` 到 `main`。
-- 都支持 `workflow_dispatch` 手动触发，主路径可覆盖 `end_date`，校准路径还可覆盖 `probe_count`。
+- 主路径在数据有变化时自动 `commit` + `push` 到 `main`。
+- 主路径支持 `workflow_dispatch` 手动触发，可覆盖 `end_date`、`probe_count`。

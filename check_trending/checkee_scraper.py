@@ -788,6 +788,7 @@ def crawl_detail_range(
     jitter_seconds: float,
     retries: int,
     timeout: int,
+    merge_with_canonical: bool = True,
 ) -> list[CaseRecord]:
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_dir = output_dir / "raw" / "details"
@@ -835,7 +836,13 @@ def crawl_detail_range(
             print(f"{status}={offset}/{total} case={case_number} records={len(records)}", flush=True)
 
     records.sort(key=lambda item: (item.check_date, item.case_number))
-    write_outputs(records, output_dir, start_date, end_date)
+    write_outputs(
+        records,
+        output_dir,
+        start_date,
+        end_date,
+        merge_with_canonical=merge_with_canonical,
+    )
     return records
 
 
@@ -1099,6 +1106,7 @@ def main() -> None:
         jitter_seconds=args.jitter_seconds,
         retries=args.retries,
         timeout=args.timeout,
+        merge_with_canonical=merge_with_canonical,
     )
 
 
