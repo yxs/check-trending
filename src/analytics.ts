@@ -5,7 +5,6 @@ import type {
   CurrentStatus,
   DailyClearPoint,
   Filters,
-  ForecastPoint,
   HighTideRun,
   LowTideRun,
   MovingAveragePoint,
@@ -267,41 +266,12 @@ export function buildCurrentStatus(series: DailyClearPoint[], maxDailyCount: num
   };
 }
 
-export function buildForecast(
-  series: DailyClearPoint[],
-  highRuns: HighTideRun[],
-  lowRuns: LowTideRun[],
-  days: number,
-): ForecastPoint[] {
-  const latestDate = series[series.length - 1]?.date;
-  if (!latestDate) {
-    return [];
-  }
-  const recent7 = averageLastDays(series, 7);
-  const recent14 = averageLastDays(series, 14);
-  const recent30 = averageLastDays(series, 30);
-  const baseline = Number((recent7 * 0.55 + recent14 * 0.3 + recent30 * 0.15).toFixed(2));
-  const currentLow = lowRuns.find((run) => run.endDate === latestDate);
-  const priorEvents = findWaveEvents(
-    lowRuns.filter((run) => run.endDate < latestDate),
-    highRuns,
-    10,
-  );
-  const reference = priorEvents[0];
-  const highAverage = reference ? reference.high.totalClears / reference.high.days : Math.max(baseline, ...highRuns.map((run) => run.totalClears / run.days));
-  const reboundStart = currentLow && reference
-    ? clamp(reference.low.days + reference.gapDays - currentLow.days, 1, 10)
-    : 8;
-  const target = Number(Math.max(baseline, Math.min(highAverage * 0.45, Math.max(recent30 * 3, baseline + 3), 10)).toFixed(2));
-  return Array.from({ length: days }, (_, index) => ({
-    date: addDays(latestDate, index + 1),
-    value: forecastValue(baseline, target, index + 1, reboundStart, days),
-  }));
-}
-
 export function getDateTickInterval(dayCount: number): number {
-  if (dayCount <= 45) {
+  if (dayCount <= 18) {
     return 1;
+  }
+  if (dayCount <= 45) {
+    return 2;
   }
   if (dayCount <= 100) {
     return 5;
@@ -312,12 +282,29 @@ export function getDateTickInterval(dayCount: number): number {
   return 20;
 }
 
-export function normalizeChartView(windowDays: number, offset: number, totalDays: number): { windowDays: number; offset: number } {
-  const maxWindow = Math.max(1, totalDays);
-  const minWindow = Math.min(14, maxWindow);
-  const normalizedWindow = clamp(Math.round(windowDays), minWindow, maxWindow);
-  const normalizedOffset = clamp(Math.round(offset), 0, Math.max(0, maxWindow - normalizedWindow));
-  return { windowDays: normalizedWindow, offset: normalizedOffset };
+export function getDateTickIndexes(dates: string[], stepPx: number, minSpacingPx: number): number[] {
+  if (dates.length === 0) {
+    return [];
+  }
+  const indexes: number[] = [0];
+  let lastX = 0;
+  for (let index = 1; index < dates.length - 1; index += 1) {
+    const x = index * stepPx;
+    if (x - lastX >= minSpacingPx) {
+      indexes.push(index);
+      lastX = x;
+    }
+  }
+  if (dates.length > 1) {
+    const lastIndex = dates.length - 1;
+    const lastLabelX = lastIndex * stepPx;
+    if (lastLabelX - lastX >= minSpacingPx * 0.75) {
+      indexes.push(lastIndex);
+    } else {
+      indexes[indexes.length - 1] = lastIndex;
+    }
+  }
+  return indexes;
 }
 
 function getDateCutoff(newestDate: string, timeRangeDays: Filters['timeRangeDays']): string | null {
@@ -350,28 +337,3 @@ function sumLastDays(series: DailyClearPoint[], days: number): number {
   return series.slice(-days).reduce((sum, point) => sum + point.count, 0);
 }
 
-function averageLastDays(series: DailyClearPoint[], days: number): number {
-  const window = series.slice(-days);
-  if (window.length === 0) {
-    return 0;
-  }
-  return Number((window.reduce((sum, point) => sum + point.count, 0) / window.length).toFixed(2));
-}
-
-function addDays(startDate: string, days: number): string {
-  const date = new Date(`${startDate}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function forecastValue(baseline: number, target: number, day: number, reboundStart: number, totalDays: number): number {
-  if (day < reboundStart) {
-    return Number((baseline * (0.96 + day * 0.01)).toFixed(2));
-  }
-  const progress = (day - reboundStart + 1) / Math.max(totalDays - reboundStart + 1, 1);
-  return Number((baseline + (target - baseline) * (1 - Math.cos(progress * Math.PI)) / 2).toFixed(2));
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}

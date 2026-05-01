@@ -3,13 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDailyClearSeries,
   findHighTideRuns,
-  buildForecast,
   buildCurrentStatus,
   filterCases,
   findLowTideRuns,
   findWaveEvents,
   getDateTickInterval,
-  normalizeChartView,
+  getDateTickIndexes,
   getCheckDepth,
   getRegionGroup,
   getVisaGroup,
@@ -202,41 +201,18 @@ describe('filtering and daily clear series', () => {
     expect(status.latestDate).toBe('2026-01-04');
   });
 
-  it('builds a 30-day forecast that can rise after a similar prior reversal', () => {
-    const forecast = buildForecast(
-      [
-        { date: '2026-01-01', count: 1, noteCount: 0 },
-        { date: '2026-01-02', count: 0, noteCount: 0 },
-        { date: '2026-01-03', count: 1, noteCount: 0 },
-        { date: '2026-01-04', count: 0, noteCount: 0 },
-        { date: '2026-01-05', count: 1, noteCount: 0 },
-      ],
-      [{ startDate: '2026-01-10', endDate: '2026-01-12', days: 3, totalClears: 30 }],
-      [
-        { startDate: '2025-11-01', endDate: '2025-11-30', days: 30, totalClears: 20 },
-        { startDate: '2025-12-01', endDate: '2026-01-05', days: 36, totalClears: 20 },
-      ],
-      30,
-    );
-
-    expect(forecast).toHaveLength(30);
-    expect(forecast[0].date).toBe('2026-01-06');
-    expect(forecast[29].value).toBeGreaterThan(forecast[0].value);
-    expect(forecast.some((point) => !Number.isInteger(point.value))).toBe(true);
-  });
-
   it('chooses date tick intervals from visible day count', () => {
     expect(getDateTickInterval(14)).toBe(1);
-    expect(getDateTickInterval(30)).toBe(1);
+    expect(getDateTickInterval(30)).toBe(2);
     expect(getDateTickInterval(80)).toBe(5);
     expect(getDateTickInterval(180)).toBe(10);
     expect(getDateTickInterval(300)).toBe(20);
   });
 
-  it('normalizes chart window and offset boundaries', () => {
-    expect(normalizeChartView(10, -5, 120)).toEqual({ windowDays: 14, offset: 0 });
-    expect(normalizeChartView(500, 0, 120)).toEqual({ windowDays: 120, offset: 0 });
-    expect(normalizeChartView(30, 200, 120)).toEqual({ windowDays: 30, offset: 90 });
+  it('chooses date tick indexes by pixel spacing', () => {
+    const dates = ['2025-12-21', '2025-12-31', '2026-01-01', '2026-01-11', '2026-01-21'];
+
+    expect(getDateTickIndexes(dates, 20, 55)).toEqual([0, 4]);
   });
 
   it('computes trailing moving averages', () => {

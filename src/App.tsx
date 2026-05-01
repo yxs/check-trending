@@ -1,27 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import {
   buildCurrentStatus,
   buildDailyClearSeries,
-  buildForecast,
   findHighTideRuns,
   findLowTideRuns,
   findWaveEvents,
   filterCases,
-  getDateTickInterval,
+  getDateTickIndexes,
   getRegionGroup,
   hasNote,
   movingAverage,
-  normalizeChartView,
 } from './analytics';
 import type {
   CaseRecord,
-  ChartWindowDays,
   CurrentStatus,
   DailyClearPoint,
   Filters,
-  ForecastPoint,
   LowTideThreshold,
   TimeRangeDays,
   VisaGroup,
@@ -75,8 +71,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(5);
-  const [chartWindowDays, setChartWindowDays] = useState<ChartWindowDays>(180);
-  const [chartOffset, setChartOffset] = useState(0);
+  const [dayWidth, setDayWidth] = useState(8);
   const [route, setRoute] = useState(window.location.pathname);
 
   useEffect(() => {
@@ -110,20 +105,15 @@ export default function App() {
 
   const filteredCases = useMemo(() => (data ? filterCases(data.cases, filters) : []), [data, filters]);
   const clearSeries = useMemo(() => buildDailyClearSeries(filteredCases), [filteredCases]);
-  const chartView = useMemo(
-    () => normalizeChartView(chartWindowDays, chartOffset, clearSeries.length),
-    [chartOffset, chartWindowDays, clearSeries.length],
-  );
-  const fullAverageSeries = useMemo(() => movingAverage(clearSeries, 7), [clearSeries]);
-  const visibleClearSeries = useMemo(() => sliceSeriesByWindow(clearSeries, chartView.windowDays, chartView.offset), [chartView, clearSeries]);
-  const averageSeries = useMemo(() => sliceSeriesByWindow(fullAverageSeries, chartView.windowDays, chartView.offset), [chartView, fullAverageSeries]);
+  const averageSeries = useMemo(() => movingAverage(clearSeries, 7), [clearSeries]);
   const lowTideRuns = useMemo(
-    () => findLowTideRuns(clearSeries, lowTideThreshold, 5).slice(0, 5),
+    () => findLowTideRuns(clearSeries, lowTideThreshold, 5)
+      .sort((left, right) => right.endDate.localeCompare(left.endDate))
+      .slice(0, 5),
     [clearSeries, lowTideThreshold],
   );
   const highTideRuns = useMemo(() => findHighTideRuns(clearSeries, 8, 3).slice(0, 5), [clearSeries]);
   const allLowTideRuns = useMemo(() => findLowTideRuns(clearSeries, lowTideThreshold, 5), [clearSeries, lowTideThreshold]);
-  const forecast = useMemo(() => buildForecast(clearSeries, highTideRuns, allLowTideRuns, 30), [allLowTideRuns, clearSeries, highTideRuns]);
   const currentStatus = useMemo(
     () => buildCurrentStatus(clearSeries, lowTideThreshold, 5),
     [clearSeries, lowTideThreshold],
@@ -146,8 +136,6 @@ export default function App() {
       });
   }, [filteredCases, filters.selectedDate]);
   const metrics = useMemo(() => buildMetrics(filteredCases), [filteredCases]);
-  const canPanOlder = chartView.offset + chartView.windowDays < clearSeries.length;
-  const canPanNewer = chartView.offset > 0;
 
   if (route === DONATE_PATH) {
     return <DonatePage onNavigateHome={() => navigate('/')} />;
@@ -168,7 +156,7 @@ export default function App() {
           <p className="eyebrow">Check Trending</p>
           <h1>签证 Check 出签趋势</h1>
           <p className="lede">
-            观察每日 Clear 数量、签证类型趋势、深度 Check 和有 Note 的重点更新人群。
+            基于 Checkee 公开样本，观察每日 Clear 节奏、签证类型差异与等待时长分布。
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
@@ -197,14 +185,14 @@ export default function App() {
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </Select>
-        <Select label="Check 深度" value={filters.checkDepth} onChange={(checkDepth) => updateFilters({ checkDepth })}>
+        <Select label="等待时长" value={filters.checkDepth} onChange={(checkDepth) => updateFilters({ checkDepth })}>
           <option value="all">全部</option>
           <option value="gte7">7 天及以上</option>
           <option value="gte30">30 天及以上</option>
           <option value="gte60">60 天及以上</option>
           <option value="gte90">90 天及以上</option>
         </Select>
-        <Select label="Note 人群" value={filters.noteCohort} onChange={(noteCohort) => updateFilters({ noteCohort })}>
+        <Select label="Note 样本" value={filters.noteCohort} onChange={(noteCohort) => updateFilters({ noteCohort })}>
           <option value="all">全部</option>
           <option value="withNote">有 Note</option>
           <option value="withoutNote">无 Note</option>
@@ -227,57 +215,50 @@ export default function App() {
       </section>
 
       <section className="metrics">
-        <Metric label="筛选后样本" value={metrics.total} />
-        <Metric label="Clear" value={metrics.clear} />
-        <Metric label="Pending" value={metrics.pending} />
-        <Metric label="有 Note" value={metrics.withNote} />
-        <Metric label="Median 等待" value={`${metrics.medianWait} 天`} />
+        <Metric label="样本量" value={metrics.total} />
+        <Metric label="已 Clear" value={metrics.clear} />
+        <Metric label="处理中" value={metrics.pending} />
+        <Metric label="含 Note" value={metrics.withNote} />
+        <Metric label="中位等待" value={`${metrics.medianWait} 天`} />
         <Metric label="P90 等待" value={`${metrics.p90Wait} 天`} />
       </section>
 
-      <section className="status-grid">
+      <section className="status-grid status-grid-single">
         <CurrentStatusCard status={currentStatus} threshold={lowTideThreshold} />
-        <ForecastCard forecast={forecast} />
       </section>
 
       <section className="panel">
         <div className="section-heading">
           <div>
             <h2>每日 Clear 趋势</h2>
-            <p>柱状图为自然日每日 Clear 数量，0 clear 的日期也会显示。折线为 7 日移动平均，深色部分代表当天 Clear 中有 Note 的 case。</p>
+            <p>柱子表示每天 Clear 数量（含 0 Clear 日期），橙线表示 7 日平均，深蓝部分表示当天含 Note 的 Clear。</p>
           </div>
           <div className="chart-actions">
-            <label className="zoom-field">
-              <span>缩放：{chartView.windowDays} 天</span>
-              <input
-                type="range"
-                min={14}
-                max={Math.max(14, clearSeries.length)}
-                value={chartView.windowDays}
-                onChange={(event) => updateChartView(Number(event.target.value), 0)}
-              />
-            </label>
-            <button className="ghost-button" onClick={() => updateChartView(chartView.windowDays * 0.72, chartView.offset)}>放大</button>
-            <button className="ghost-button" onClick={() => updateChartView(chartView.windowDays * 1.38, chartView.offset)}>缩小</button>
-            <button className="ghost-button" disabled={!canPanOlder} onClick={() => updateChartView(chartView.windowDays, chartView.offset + Math.round(chartView.windowDays * 0.5))}>更早</button>
-            <button className="ghost-button" disabled={!canPanNewer} onClick={() => updateChartView(chartView.windowDays, Math.max(0, chartView.offset - Math.round(chartView.windowDays * 0.5)))}>更新</button>
+            <span className="zoom-indicator">图表缩放：{getZoomLabel(dayWidth)}</span>
+            <button
+              className="icon-button"
+              aria-label="放大"
+              onClick={() => setDayWidth((current) => clamp(current * 1.2, 3, 30))}
+            >
+              +
+            </button>
+            <button
+              className="icon-button"
+              aria-label="缩小"
+              onClick={() => setDayWidth((current) => clamp(current / 1.2, 3, 30))}
+            >
+              −
+            </button>
             {filters.selectedDate && (
               <button className="ghost-button" onClick={() => updateFilters({ selectedDate: null })}>取消日期选择</button>
             )}
           </div>
         </div>
         <ClearWaveChart
-          series={visibleClearSeries}
+          dayWidth={dayWidth}
+          series={clearSeries}
           averageSeries={averageSeries}
-          forecast={chartView.offset === 0 ? forecast : []}
           selectedDate={filters.selectedDate}
-          onWheel={(deltaX, deltaY, shouldZoom) => {
-            if (shouldZoom) {
-              updateChartView(chartView.windowDays * (deltaY > 0 ? 1.12 : 0.88), chartView.offset);
-              return;
-            }
-            updateChartView(chartView.windowDays, chartView.offset + Math.round(deltaX / 18));
-          }}
           onSelectDate={(selectedDate) => updateFilters({ selectedDate })}
         />
       </section>
@@ -285,8 +266,8 @@ export default function App() {
       <section className="panel">
         <div className="section-heading">
           <div>
-            <h2>趋势摘要</h2>
-            <p>把低潮期和随后 10 天内出现的高峰期配对，观察是否存在积压后集中出签。</p>
+            <h2>低潮与回升配对</h2>
+            <p>将低潮期与之后 10 天内出现的高峰期配对，用于观察是否出现阶段性集中出签。</p>
           </div>
         </div>
         <WaveEventList events={waveEvents} />
@@ -294,41 +275,38 @@ export default function App() {
 
       <section className="split">
         <div className="panel">
-          <h2>当天 Clear Cases</h2>
+          <h2>选中日期 Clear 详情</h2>
           {filters.selectedDate ? (
             <CaseTable cases={selectedCases} />
           ) : (
-            <p className="muted">点击上方任意日期柱子查看当天 Clear 的 case。会优先展示有 Note 的记录。</p>
+            <p className="muted">点击上方任意日期柱子查看当天 Clear 记录，列表会优先展示含 Note 的样本。</p>
           )}
         </div>
         <div className="panel">
           <div className="compact-heading">
-            <h2>低潮期</h2>
+            <h2>低速区间</h2>
             <Select label="阈值" value={String(lowTideThreshold)} onChange={(value) => setLowTideThreshold(parseLowTideThreshold(value))}>
               <option value="1">≤ 1 个/天</option>
               <option value="2">≤ 2 个/天</option>
               <option value="5">≤ 5 个/天</option>
             </Select>
           </div>
-          <p className="muted">当前筛选下，连续 5 天及以上每日 Clear 不超过 {lowTideThreshold} 个的区间。默认适合观察全量 deep check 是否整体低速。</p>
+          <p className="muted">当前筛选下，连续 5 天及以上每日 Clear 不超过 {lowTideThreshold} 个的区间，可用于识别整体节奏偏慢的阶段。</p>
           <LowTideList runs={lowTideRuns} />
         </div>
       </section>
-      <footer className="footer-note">
-        <span>登记公开 case 去 <a href="https://www.checkee.info/" target="_blank" rel="noreferrer">Checkee.info</a>。</span>
-        <span>个人 case tracking 请使用相关 app 或 <a href="https://ceacmonitor.com/" target="_blank" rel="noreferrer">CEAC Monitor</a>。</span>
+      <footer className="footer-note" aria-label="数据来源与外部工具">
+        <span className="footer-title">数据来源与工具</span>
+        <div className="footer-links">
+          <a href="https://www.checkee.info/" target="_blank" rel="noreferrer">公开样本登记：Checkee.info</a>
+          <a href="https://ceacmonitor.com/" target="_blank" rel="noreferrer">个人进度跟踪：CEAC Monitor</a>
+        </div>
       </footer>
     </main>
   );
 
   function updateFilters(update: Partial<Filters>) {
     setFilters((current) => ({ ...current, selectedDate: current.selectedDate, ...update }));
-  }
-
-  function updateChartView(windowDays: number, offset: number) {
-    const next = normalizeChartView(windowDays, offset, clearSeries.length);
-    setChartWindowDays(next.windowDays);
-    setChartOffset(next.offset);
   }
 
   function navigate(path: string) {
@@ -358,31 +336,18 @@ function DonatePage({ onNavigateHome }: { onNavigateHome: () => void }) {
 function CurrentStatusCard({ status, threshold }: { status: CurrentStatus; threshold: LowTideThreshold }) {
   return (
     <section className="panel status-card">
-      <h2>当前状态</h2>
+      <h2>近期节奏</h2>
       {status.currentLow ? (
-        <p className="status-title">当前处于低潮：已持续 {status.currentLow.days} 天</p>
+        <p className="status-title">当前处于低速区：已持续 {status.currentLow.days} 天</p>
       ) : (
-        <p className="status-title">当前未处于低潮</p>
+        <p className="status-title">当前不在低速区</p>
       )}
       <div className="status-stats">
-        <span>最近 7 天 Clear {status.clears7d} 个</span>
-        <span>最近 14 天 Clear {status.clears14d} 个</span>
-        <span>最近 30 天 Clear {status.clears30d} 个</span>
+        <span>近 7 天 Clear {status.clears7d} 个</span>
+        <span>近 14 天 Clear {status.clears14d} 个</span>
+        <span>近 30 天 Clear {status.clears30d} 个</span>
       </div>
-      <p className="muted">低潮定义：连续 5 天及以上每日 Clear 不超过 {threshold} 个。</p>
-    </section>
-  );
-}
-
-function ForecastCard({ forecast }: { forecast: ForecastPoint[] }) {
-  const total = Math.round(forecast.reduce((sum, point) => sum + point.value, 0));
-  return (
-    <section className="panel status-card">
-      <h2>未来 30 天趋势估计</h2>
-      <div className="forecast-totals">
-        <span>预计 Clear {total} 个</span>
-      </div>
-      <p className="muted">灰色虚线基于近期速度和历史反弹做平滑外推，不是个人 case 预测。</p>
+      <p className="muted">低速区定义：连续 5 天及以上，每日 Clear 不超过 {threshold} 个。</p>
     </section>
   );
 }
@@ -466,74 +431,85 @@ function Metric({ label, value }: { label: string; value: number | string }) {
 
 function ClearWaveChart({
   averageSeries,
-  forecast,
-  onWheel,
+  dayWidth,
   onSelectDate,
   selectedDate,
   series,
 }: {
   averageSeries: { date: string; value: number }[];
-  forecast: ForecastPoint[];
-  onWheel: (deltaX: number, deltaY: number, shouldZoom: boolean) => void;
+  dayWidth: number;
   onSelectDate: (date: string) => void;
   selectedDate: string | null;
   series: DailyClearPoint[];
 }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [stickToRight, setStickToRight] = useState(true);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap || !stickToRight) {
+      return;
+    }
+    wrap.scrollLeft = wrap.scrollWidth - wrap.clientWidth;
+  }, [dayWidth, series.length, stickToRight]);
+
   if (series.length === 0) {
     return <p className="muted">当前筛选条件下没有 Clear 数据。</p>;
   }
 
-  const width = 920;
   const height = 360;
   const padding = { top: 24, right: 24, bottom: 42, left: 48 };
-  const plotWidth = width - padding.left - padding.right;
+  const normalizedDayWidth = clamp(dayWidth, 3, 30);
+  const slotCount = Math.max(series.length, 1);
+  const plotWidth = slotCount * normalizedDayWidth;
+  const svgWidth = plotWidth + padding.left + padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const forecastValues = forecast.map((point) => point.value);
-  const maxCount = Math.max(...series.map((point) => point.count), ...averageSeries.map((point) => point.value), ...forecastValues, 1);
-  const totalPoints = series.length + forecast.length;
-  const minStep = getMinChartStep(series.length);
-  const step = Math.max(plotWidth / totalPoints, minStep);
-  const actualPlotWidth = step * totalPoints;
-  const barWidth = Math.max(1.5, step - 1);
-  const tickInterval = getDateTickInterval(series.length);
+  const maxCount = Math.max(
+    ...series.map((point) => point.count),
+    ...averageSeries.map((point) => point.value),
+    1,
+  );
+  const barWidth = Math.max(1.5, normalizedDayWidth - 1.2);
+  const minLabelSpacingPx = Math.max(72, normalizedDayWidth * 7);
+  const historyTickIndexes = getDateTickIndexes(series.map((point) => point.date), normalizedDayWidth, minLabelSpacingPx);
 
-  const xForIndex = (index: number) => padding.left + (index + 0.5) * step;
+  const xForHistoryIndex = (index: number) => padding.left + (index + 0.5) * normalizedDayWidth;
   const yForValue = (value: number) => padding.top + plotHeight - (value / maxCount) * plotHeight;
   const averagePath = smoothPath(averageSeries.map((point, index) => ({
-    x: xForIndex(index),
+    x: xForHistoryIndex(index),
     y: yForValue(point.value),
   })));
-  const forecastStart = averageSeries[averageSeries.length - 1];
-  const forecastPath = smoothPath([
-    ...(forecastStart ? [{ x: xForIndex(series.length - 1), y: yForValue(forecastStart.value) }] : []),
-    ...forecast.map((point, index) => ({
-      x: xForIndex(series.length + index),
-      y: yForValue(point.value),
-    })),
-  ]);
+  const axisLabelCandidates: AxisLabel[] = historyTickIndexes.map((index) => ({
+    key: `history-${series[index].date}`,
+    text: series[index].date.slice(5),
+    x: xForHistoryIndex(index),
+  }));
+  const axisLabels = pickSpacedAxisLabels(axisLabelCandidates, minLabelSpacingPx);
 
   return (
     <div
       className="chart-wrap"
-      onWheel={(event) => {
-        event.preventDefault();
-        onWheel(event.deltaX, event.deltaY, event.ctrlKey || Math.abs(event.deltaY) > Math.abs(event.deltaX));
+      ref={wrapRef}
+      onScroll={(event) => {
+        const target = event.currentTarget;
+        const remain = target.scrollWidth - target.clientWidth - target.scrollLeft;
+        setStickToRight(remain < 36);
       }}
     >
-      <svg className="chart" width={actualPlotWidth + padding.left + padding.right} viewBox={`0 0 ${actualPlotWidth + padding.left + padding.right} ${height}`} role="img" aria-label="每日 Clear 趋势图">
-        <line x1={padding.left} y1={padding.top + plotHeight} x2={padding.left + actualPlotWidth} y2={padding.top + plotHeight} />
+      <svg className="chart" width={svgWidth} viewBox={`0 0 ${svgWidth} ${height}`} role="img" aria-label="每日 Clear 趋势图">
+        <line x1={padding.left} y1={padding.top + plotHeight} x2={padding.left + plotWidth} y2={padding.top + plotHeight} />
         <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} />
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const y = padding.top + plotHeight - ratio * plotHeight;
           return (
             <g key={ratio}>
-              <line className="grid-line" x1={padding.left} y1={y} x2={padding.left + actualPlotWidth} y2={y} />
+              <line className="grid-line" x1={padding.left} y1={y} x2={padding.left + plotWidth} y2={y} />
               <text x={12} y={y + 4}>{Math.round(maxCount * ratio)}</text>
             </g>
           );
         })}
         {series.map((point, index) => {
-          const x = xForIndex(index) - barWidth / 2;
+          const x = xForHistoryIndex(index) - barWidth / 2;
           const totalHeight = padding.top + plotHeight - yForValue(point.count);
           const noteHeight = point.count === 0 ? 0 : totalHeight * (point.noteCount / point.count);
           return (
@@ -561,13 +537,17 @@ function ClearWaveChart({
           );
         })}
         <path className="avg-line" d={averagePath} />
-        <path className="forecast-line" d={forecastPath} />
-        {series.map((point, index) => {
-          if (index !== 0 && index !== series.length - 1 && !shouldShowDateTick(point.date, tickInterval)) {
-            return null;
-          }
-          return <text key={point.date} className="date-label" x={xForIndex(index) - 18} y={height - 12}>{point.date.slice(5)}</text>;
-        })}
+        {axisLabels.map((label) => (
+          <text
+            key={label.key}
+            className="date-label"
+            textAnchor="middle"
+            x={label.x}
+            y={height - 12}
+          >
+            {label.text}
+          </text>
+        ))}
       </svg>
     </div>
   );
@@ -626,27 +606,6 @@ function smoothPath(points: Array<{ x: number; y: number }>): string {
   }, '');
 }
 
-function getMinChartStep(dayCount: number): number {
-  if (dayCount <= 35) {
-    return 30;
-  }
-  if (dayCount <= 70) {
-    return 18;
-  }
-  if (dayCount <= 120) {
-    return 12;
-  }
-  return 5;
-}
-
-function shouldShowDateTick(date: string, tickInterval: number): boolean {
-  if (tickInterval === 1) {
-    return true;
-  }
-  const day = Number(date.slice(8, 10));
-  return day === 1 || (day - 1) % tickInterval === 0;
-}
-
 function buildMetrics(records: CaseRecord[]) {
   const waits = records
     .map((record) => record.waiting_days)
@@ -669,6 +628,16 @@ function percentile(values: number[], ratio: number): number {
   return values[Math.min(values.length - 1, Math.floor((values.length - 1) * ratio))];
 }
 
+function getZoomLabel(dayWidth: number): string {
+  if (dayWidth >= 14) {
+    return '放大';
+  }
+  if (dayWidth <= 6) {
+    return '紧凑';
+  }
+  return '标准';
+}
+
 function parseTimeRange(value: string): TimeRangeDays {
   return TIME_RANGE_MAP[value] ?? 'all';
 }
@@ -685,7 +654,27 @@ function getVisaSubtypeOptions(visaGroup: VisaGroup) {
   return VISA_SUBTYPE_OPTIONS[visaGroup];
 }
 
-function sliceSeriesByWindow<T>(series: T[], windowDays: ChartWindowDays, offset: number): T[] {
-  const end = Math.max(0, series.length - offset);
-  return series.slice(Math.max(0, end - windowDays), end);
+type AxisLabel = {
+  key: string;
+  text: string;
+  x: number;
+};
+
+function pickSpacedAxisLabels(labels: AxisLabel[], minSpacingPx: number): AxisLabel[] {
+  const selected: AxisLabel[] = [];
+  for (const label of labels.sort((left, right) => left.x - right.x)) {
+    const previous = selected[selected.length - 1];
+    if (!previous) {
+      selected.push(label);
+      continue;
+    }
+    if (label.x - previous.x >= minSpacingPx) {
+      selected.push(label);
+    }
+  }
+  return selected;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
