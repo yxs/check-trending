@@ -47,13 +47,38 @@ npm run dev
 
 ## 数据更新流程
 
-- 自动任务：`Monthly Data Refresh` 工作流每月 UTC 19:00（每月 1 日，北京时间次日 03:00）触发。
-- 主路径（按月页面驱动）：
-  - 抓取从起始日期到当前月份的 `main.php?dispdate=YYYY-MM` 页面，汇总月度可见 case ID。
-  - 基于这些 case ID 抓取 `personal_detail.php?casenum=...`，并更新 `data/checkee/checkee_cases.json`。
-- 校验路径（每月一次低频对账）：
-  - 在 monthly case ID 区间内做 detail-range 扫描（仅比对 case ID，不比对 detail 字段）。
-  - 生成 `data/checkee/monthly_reconciliation_summary.json`，用于查看 monthly 列表和 range 扫描差异。
-- 详情缓存优化：`raw/details/*.html` 会保留详情表格区域，自动去除导航、脚本、统计代码等无关片段。
-- 自动提交：当数据有变更时，工作流会自动 commit 并 push 到 `main`。
-- 手动触发：可在 GitHub Actions 页面手动触发该工作流，并可覆盖 `end_date`、`probe_count`。
+数据更新拆成两条路径：
+
+### 主路径：`Daily Data Refresh`
+
+- 调度：每天 03:00 北京时间（cron `0 19 * * *`）。
+- Case ID 发现：只抓"还可能新增 ID"的月份。
+  - day-of-month ≤ 15：抓**当前月 + 上个月**（处理迟到上报的 buffer 窗口）。
+  - day-of-month > 15：只抓**当前月**。
+  - 历史月份的 case ID 列表从 `data/checkee/monthly_case_ids.json` manifest 直接读取，不再 fetch。
+- Detail 更新：
+  - 当前月抓到的 case → fetch detail。
+  - canonical 中所有非终态（不在 `Clear` / `Reject`）的 case → 强制 fetch detail，更新 status / note / complete_date。
+  - 终态 case → 不动（小概率会变，留给月度校准抽查）。
+- Merge：将本轮新 records 按 `case_number` merge 进 `data/checkee/checkee_cases.json`，保留历史月份不在本轮 scope 的 case。
+- Cloudflare：`main.php` 受 Cloudflare managed JS challenge 保护，在 GitHub Actions 上通过 `xvfb-run` + `patchright`（Playwright 的 stealth fork）+ 系统 Chrome 解 challenge。详情页未启用 challenge，仍走 `urllib`。
+
+### 校准路径：`Monthly Reconciliation`
+
+- 调度：每月 16 日 03:00 北京时间（cron `0 19 15 * *`）。这一天上一月已不在主路径 buffer 窗口内，case ID 完全 frozen，适合做 ID 级对账。
+- 流程：先跑主路径（manifest + pending refresh + merge），再做 detail-range 暴力扫描——按 case_number 区间 `[min(canonical), max(canonical) + probe_count]` 逐个 fetch detail，验证哪些 case 落在日期范围内。
+- 输出对账报告 `data/checkee/reports/reconciliation/YYYY-MM.json`，记录 monthly_only / brute_force_only / matched 等指标，并把 brute_force_only（月度漏列但 detail 页存在）的 case 自动 merge 进 canonical。
+- 报告按月归档，永久保留，供以后排查。
+
+### 数据文件组织
+
+- `data/checkee/checkee_cases.json` — 所有 case 的 canonical 数据，前端构建源。
+- `data/checkee/monthly_case_ids.json` — 每月的 case ID manifest，避免重复抓已 frozen 月份。
+- `data/checkee/raw/details/*.html` — detail 页面缓存，已自动 trim 到详情表格区域，去掉导航、脚本、统计等无关片段。
+- `data/checkee/reports/reconciliation/YYYY-MM.json` — 月度对账报告归档。
+- `data/checkee/crawl_summary.json` — canonical 数据集的最新 summary（被 `scripts/build_web_data.py` 校验）。
+
+### 自动提交
+
+- 两个工作流都会在数据有变化时自动 `commit` + `push` 到 `main`。
+- 都支持 `workflow_dispatch` 手动触发，主路径可覆盖 `end_date`，校准路径还可覆盖 `probe_count`。
