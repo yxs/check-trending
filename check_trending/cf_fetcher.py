@@ -30,13 +30,13 @@ class BrowserFetcher:
     def __init__(
         self,
         *,
-        channel: str = "chrome",
+        channel: str | None = None,
         headless: bool = False,
         viewport_width: int = 1280,
         viewport_height: int = 800,
         locale: str = "en-US",
         navigation_timeout_ms: int = 60_000,
-        challenge_wait_ms: int = 30_000,
+        challenge_wait_ms: int = 60_000,
     ) -> None:
         self.channel = channel
         self.headless = headless
@@ -60,9 +60,10 @@ class BrowserFetcher:
             ) from error
 
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
-            headless=self.headless, channel=self.channel
-        )
+        launch_kwargs: dict[str, Any] = {"headless": self.headless}
+        if self.channel:
+            launch_kwargs["channel"] = self.channel
+        self._browser = self._playwright.chromium.launch(**launch_kwargs)
         self._context = self._browser.new_context(
             locale=self.locale, viewport=self.viewport
         )

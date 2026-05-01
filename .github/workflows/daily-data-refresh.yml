@@ -24,11 +24,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install xvfb and patchright
+      - name: Install xvfb + patchright + stealth chromium
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
           pip install patchright
+          patchright install chromium --no-shell --with-deps
+          which google-chrome-stable || true
+          google-chrome-stable --version 2>/dev/null || true
 
       - name: Resolve crawl parameters
         run: |
@@ -46,8 +49,8 @@ jobs:
             --start-date 2025-07-01 \
             --end-date "$END_DATE" \
             --monthly-fetcher browser \
-            --delay-seconds 0.85 \
-            --jitter-seconds 0.55 \
+            --delay-seconds 0.3 \
+            --jitter-seconds 0.2 \
             --retries 2 \
             --timeout 30
 
