@@ -1,0 +1,78 @@
+name: Daily Data Refresh
+
+on:
+  schedule:
+    # 03:00 Beijing (UTC+8)
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      end_date:
+        description: "Crawl end date (YYYY-MM-DD), defaults to today UTC"
+        required: false
+      case_number_start:
+        description: "Start case number, defaults to 842700"
+        required: false
+      case_number_end:
+        description: "End case number, defaults to 845700"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve crawl parameters
+        run: |
+          END_DATE="${{ github.event.inputs.end_date }}"
+          CASE_NUMBER_START="${{ github.event.inputs.case_number_start }}"
+          CASE_NUMBER_END="${{ github.event.inputs.case_number_end }}"
+          if [ -z "$END_DATE" ]; then
+            END_DATE="$(date -u +%F)"
+          fi
+          if [ -z "$CASE_NUMBER_START" ]; then
+            CASE_NUMBER_START="842700"
+          fi
+          if [ -z "$CASE_NUMBER_END" ]; then
+            CASE_NUMBER_END="845700"
+          fi
+          echo "END_DATE=$END_DATE" >> "$GITHUB_ENV"
+          echo "CASE_NUMBER_START=$CASE_NUMBER_START" >> "$GITHUB_ENV"
+          echo "CASE_NUMBER_END=$CASE_NUMBER_END" >> "$GITHUB_ENV"
+
+      - name: Refresh Checkee detail-range dataset
+        run: |
+          python -m check_trending.checkee_scraper \
+            --source detail-range \
+            --start-date 2025-07-01 \
+            --end-date "$END_DATE" \
+            --case-number-start "$CASE_NUMBER_START" \
+            --case-number-end "$CASE_NUMBER_END" \
+            --delay-seconds 0 \
+            --jitter-seconds 0 \
+            --retries 1 \
+            --timeout 30
+
+      - name: Build web data payload
+        run: python scripts/build_web_data.py
+
+      - name: Run scraper unit tests
+        run: python -m unittest tests/test_checkee_scraper.py
+
+      - name: Commit and push updated data
+        run: |
+          if [ -z "$(git status --porcelain data/checkee public/data/app-data.json)" ]; then
+            echo "No dataset changes detected."
+            exit 0
+          fi
+          git add data/checkee public/data/app-data.json
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update Checkee data for $END_DATE"
+          git push

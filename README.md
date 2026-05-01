@@ -6,7 +6,7 @@
 
 从 2025 年下半年开始，很多美国签证申请人在 221(g) / Administrative Processing 阶段等待明显变长。原本几周可以结束的 check，开始出现两个月、三个月甚至更久的情况。对正在等待的人来说，单个 case 的状态更新很有限，真正有帮助的是看到整体趋势：最近有没有集中 Clear、是否又进入低潮、不同签证类型和领馆之间是否有差异。
 
-Check Trending 基于 Checkee.info 的公开上报数据，重点观察 `check_date` 到 `complete_date` 之间的变化，以及每天 Clear 数量的趋势。当前数据覆盖 2025-07-01 到 2026-04-29，共 1879 条 case，其中 1145 条已 Clear，716 条仍 Pending，1081 条包含用户填写的 Note。按当前口径，等待 60 天及以上的 case 有 1271 条；数据中可以看到 2026-01-21 到 2026-02-19 这类低速区间，也能看到随后 2 月下旬到 3 月出现的集中 Clear。
+Check Trending 基于 Checkee.info 的公开上报数据，重点观察 `check_date` 到 `complete_date` 之间的变化，以及每天 Clear 数量的趋势。当前数据覆盖 2025-07-01 到 2026-05-01，共 1879 条 case，其中 1145 条已 Clear，716 条仍 Pending，1081 条包含用户填写的 Note。按当前口径，等待 60 天及以上的 case 有 1274 条；数据中可以看到 2026-01-21 到 2026-02-19 这类低速区间，也能看到随后 2 月下旬到 3 月出现的集中 Clear。
 
 这个项目的目标不是追踪某一个人的 case，而是帮助大家用公开样本观察整体节奏。
 
@@ -40,7 +40,14 @@ npm run dev
 
 - 数据来源：Checkee.info 公开详情页。
 - 起始日期：2025-07-01。
-- 当前数据文件：`data/checkee/checkee_cases_2025-07-01_to_2026-04-29.json`。
+- 当前数据文件：`data/checkee/checkee_cases_2025-07-01_to_2026-05-01.json`。
 - 构建时会生成前端使用的 `public/data/app-data.json`。
 
 本项目不做个人 case tracking，不收集 DS-160、护照、姓名等私密信息，也不提供法律建议。
+
+## 数据更新流程
+
+- 自动任务：`Daily Data Refresh` 工作流每天 UTC 19:00 触发（北京时间次日 03:00）。
+- 更新步骤：运行 `checkee_scraper` 生成 `data/checkee` 数据，再运行 `scripts/build_web_data.py` 更新 `public/data/app-data.json`。
+- 自动提交：当数据有变更时，工作流会自动 commit 并 push 到 `main`。
+- 手动触发：可在 GitHub Actions 页面手动触发该工作流，并可覆盖 `end_date`、`case_number_start`、`case_number_end`。

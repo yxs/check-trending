@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 
-BASE_URL = "http://www.checkee.info"
+BASE_URL = "https://www.checkee.info"
 PUBLIC_BASE_URL = "https://www.checkee.info"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -261,6 +261,7 @@ def crawl_checkee(
     jitter_seconds: float,
     retries: int,
     timeout: int,
+    refresh_monthly: bool,
 ) -> list[CaseRecord]:
     output_dir.mkdir(parents=True, exist_ok=True)
     monthly_dir = output_dir / "raw" / "monthly"
@@ -275,7 +276,7 @@ def crawl_checkee(
     for month in months:
         month_url = f"{BASE_URL}/main.php?dispdate={month}"
         month_html_path = monthly_dir / f"{month}.html"
-        month_html = read_or_fetch(month_html_path, month_url, client)
+        month_html = read_or_fetch(month_html_path, month_url, client, force_fetch=refresh_monthly)
         month_cases = parse_month_page(month_html, month=month, start_date=start_date)
         print(f"month={month} cases={len(month_cases)}", flush=True)
         for case in month_cases:
@@ -370,8 +371,8 @@ def compute_waiting_days(check_date_value: str, complete_date_value: str | None,
     return (terminal_date - check_date).days
 
 
-def read_or_fetch(path: Path, url: str, client: PoliteHttpClient) -> str:
-    if path.exists():
+def read_or_fetch(path: Path, url: str, client: PoliteHttpClient, force_fetch: bool = False) -> str:
+    if path.exists() and not force_fetch:
         return path.read_text(encoding="utf-8", errors="ignore")
     html = client.fetch(url)
     path.write_text(html, encoding="utf-8")
@@ -438,6 +439,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jitter-seconds", type=float, default=1.25)
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--refresh-monthly", action="store_true")
     return parser.parse_args()
 
 
@@ -454,6 +456,7 @@ def main() -> None:
             jitter_seconds=args.jitter_seconds,
             retries=args.retries,
             timeout=args.timeout,
+            refresh_monthly=args.refresh_monthly,
         )
         return
     crawl_detail_range(
