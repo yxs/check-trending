@@ -1,19 +1,61 @@
 import json
-import re
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 
 DATA_DIR = Path("data/checkee")
-SUMMARY = Path("data/checkee/crawl_summary.json")
+CANONICAL_SOURCE = DATA_DIR / "checkee_cases.json"
+SUMMARY = DATA_DIR / "crawl_summary.json"
 TARGET = Path("public/data/app-data.json")
-DATA_FILE_PATTERN = re.compile(r"checkee_cases_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.json$")
 
 
-def find_latest_source() -> Path:
-    candidates = [path for path in DATA_DIR.glob("checkee_cases_*_to_*.json") if DATA_FILE_PATTERN.match(path.name)]
-    if not candidates:
-        raise FileNotFoundError("No normalized Checkee JSON file found in data/checkee")
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+def resolve_source_file() -> Path:
+    if not CANONICAL_SOURCE.exists():
+        raise FileNotFoundError(
+            f"Missing canonical source file: {CANONICAL_SOURCE}. "
+            "Run the scraper to generate data/checkee/checkee_cases.json first."
+        )
+    return CANONICAL_SOURCE
+
+
+def parse_iso_date(value: Any, field_name: str) -> date:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a date string in YYYY-MM-DD format")
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as error:
+        raise ValueError(f"{field_name} must be a date string in YYYY-MM-DD format") from error
+
+
+def validate_summary(cases: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+    summary_case_count = summary.get("case_count")
+    if summary_case_count != len(cases):
+        raise ValueError(
+            f"summary.case_count={summary_case_count} does not match cases length={len(cases)}"
+        )
+
+    summary_start_date = parse_iso_date(summary.get("start_date"), "summary.start_date")
+    summary_end_date = parse_iso_date(summary.get("end_date"), "summary.end_date")
+    if summary_start_date > summary_end_date:
+        raise ValueError("summary.start_date cannot be after summary.end_date")
+
+    for index, record in enumerate(cases):
+        check_date = parse_iso_date(record.get("check_date"), f"cases[{index}].check_date")
+        if check_date < summary_start_date or check_date > summary_end_date:
+            raise ValueError(
+                f"cases[{index}].check_date={record.get('check_date')} is outside summary range "
+                f"{summary.get('start_date')}..{summary.get('end_date')}"
+            )
+
+        complete_date_value = record.get("complete_date")
+        if complete_date_value is None:
+            continue
+        complete_date = parse_iso_date(complete_date_value, f"cases[{index}].complete_date")
+        if complete_date > summary_end_date:
+            raise ValueError(
+                f"cases[{index}].complete_date={complete_date_value} exceeds summary.end_date={summary.get('end_date')}"
+            )
 
 
 def to_public_case(record: dict) -> dict:
@@ -36,9 +78,10 @@ def to_public_case(record: dict) -> dict:
 
 
 def main() -> None:
-    source = find_latest_source()
+    source = resolve_source_file()
     cases = json.loads(source.read_text(encoding="utf-8"))
     summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
+    validate_summary(cases, summary)
     public_cases = [to_public_case(record) for record in cases]
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     TARGET.write_text(

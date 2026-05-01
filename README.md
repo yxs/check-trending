@@ -40,17 +40,20 @@ npm run dev
 
 - 数据来源：Checkee.info 公开详情页。
 - 起始日期：2025-07-01。
-- 当前数据文件：`data/checkee/checkee_cases_2025-07-01_to_2026-05-01.json`。
+- 当前数据文件：`data/checkee/checkee_cases.json`。
 - 构建时会生成前端使用的 `public/data/app-data.json`。
 
 本项目不做个人 case tracking，不收集 DS-160、护照、姓名等私密信息，也不提供法律建议。
 
 ## 数据更新流程
 
-- 自动任务：`Daily Data Refresh` 工作流每天 UTC 19:00 触发（北京时间次日 03:00）。
-- 更新步骤：
-  - 以当前数据中的最大 `case_number` 为基准，额外向上探测一段区间（默认 40）查找新 case。
-  - 对已收录但仍为非 Clear 的 case 做强制刷新，及时捕捉 Pending -> Clear 的状态变化。
-  - 运行 `scripts/build_web_data.py` 更新 `public/data/app-data.json`。
+- 自动任务：`Monthly Data Refresh` 工作流每月 UTC 19:00（每月 1 日，北京时间次日 03:00）触发。
+- 主路径（按月页面驱动）：
+  - 抓取从起始日期到当前月份的 `main.php?dispdate=YYYY-MM` 页面，汇总月度可见 case ID。
+  - 基于这些 case ID 抓取 `personal_detail.php?casenum=...`，并更新 `data/checkee/checkee_cases.json`。
+- 校验路径（每月一次低频对账）：
+  - 在 monthly case ID 区间内做 detail-range 扫描（仅比对 case ID，不比对 detail 字段）。
+  - 生成 `data/checkee/monthly_reconciliation_summary.json`，用于查看 monthly 列表和 range 扫描差异。
+- 详情缓存优化：`raw/details/*.html` 会保留详情表格区域，自动去除导航、脚本、统计代码等无关片段。
 - 自动提交：当数据有变更时，工作流会自动 commit 并 push 到 `main`。
 - 手动触发：可在 GitHub Actions 页面手动触发该工作流，并可覆盖 `end_date`、`probe_count`。
