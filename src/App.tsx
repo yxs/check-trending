@@ -371,7 +371,7 @@ export default function App() {
   );
 
   function updateFilters(update: Partial<Filters>) {
-    setFilters((current) => ({ ...current, selectedDate: current.selectedDate, ...update }));
+    setFilters((current) => ({ ...current, ...update }));
   }
 
   function navigate(path: string) {
@@ -823,8 +823,9 @@ type AxisLabel = {
 };
 
 function pickSpacedAxisLabels(labels: AxisLabel[], minSpacingPx: number): AxisLabel[] {
+  const sorted = [...labels].sort((left, right) => left.x - right.x);
   const selected: AxisLabel[] = [];
-  for (const label of labels.sort((left, right) => left.x - right.x)) {
+  for (const label of sorted) {
     const previous = selected[selected.length - 1];
     if (!previous) {
       selected.push(label);
