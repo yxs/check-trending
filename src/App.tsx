@@ -25,6 +25,8 @@ import type {
   WebData,
 } from './types';
 import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL } from './site';
+import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePreference } from './theme';
+import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
 
 const DEFAULT_FILTERS: Filters = {
   checkDepth: 'gte60',
@@ -35,6 +37,7 @@ const DEFAULT_FILTERS: Filters = {
   visaGroup: 'all',
   visaSubtype: 'all',
 };
+const DEFAULT_LOW_TIDE_THRESHOLD: LowTideThreshold = 5;
 
 const numberFormatter = new Intl.NumberFormat('zh-CN');
 const TIME_RANGE_MAP: Record<string, TimeRangeDays> = {
@@ -67,12 +70,26 @@ const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label:
 };
 
 export default function App() {
+  const initialViewState = useMemo(
+    () => readViewStateFromSearch(window.location.search, DEFAULT_FILTERS, DEFAULT_LOW_TIDE_THRESHOLD),
+    [],
+  );
   const [data, setData] = useState<WebData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(5);
+  const [filters, setFilters] = useState<Filters>(initialViewState.filters);
+  const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(initialViewState.lowTideThreshold);
   const [dayWidth, setDayWidth] = useState(8);
   const [route, setRoute] = useState(window.location.pathname);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
+    parseThemePreference(window.localStorage.getItem(THEME_STORAGE_KEY)),
+  );
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
+    window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
+  const resolvedTheme = useMemo(
+    () => resolveTheme(themePreference, systemPrefersDark),
+    [themePreference, systemPrefersDark],
+  );
 
   useEffect(() => {
     fetch('/data/app-data.json')
@@ -89,10 +106,55 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setRoute(window.location.pathname);
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (event: MediaQueryListEvent) => {
+      setSystemPrefersDark(event.matches);
+    };
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+  }, [themePreference]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.style.colorScheme = resolvedTheme;
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setRoute(window.location.pathname);
+      const nextState = readViewStateFromSearch(
+        window.location.search,
+        DEFAULT_FILTERS,
+        DEFAULT_LOW_TIDE_THRESHOLD,
+      );
+      setFilters(nextState.filters);
+      setLowTideThreshold(nextState.lowTideThreshold);
+    };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  useEffect(() => {
+    if (route === DONATE_PATH) {
+      return;
+    }
+    const search = buildSearchFromViewState(
+      filters,
+      lowTideThreshold,
+      DEFAULT_FILTERS,
+      DEFAULT_LOW_TIDE_THRESHOLD,
+    );
+    const path = window.location.pathname;
+    const nextUrl = search ? `${path}?${search}` : path;
+    const currentUrl = `${path}${window.location.search}`;
+    if (currentUrl !== nextUrl) {
+      window.history.replaceState({}, '', nextUrl);
+    }
+  }, [filters, lowTideThreshold, route]);
 
   const consulates = useMemo(() => {
     if (!data) {
@@ -146,7 +208,11 @@ export default function App() {
   }
 
   if (!data) {
-    return <main className="page"><p className="muted">正在加载趋势数据...</p></main>;
+    return (
+      <main className="page">
+        <LoadingSkeleton />
+      </main>
+    );
   }
 
   return (
@@ -165,6 +231,7 @@ export default function App() {
               navigate(DONATE_PATH);
             }}>Donate</a>
           </nav>
+          <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
         </div>
         <div className="freshness">
           <span>数据范围</span>
@@ -330,6 +397,72 @@ function DonatePage({ onNavigateHome }: { onNavigateHome: () => void }) {
         <p className="muted">谢谢支持。</p>
       </section>
     </main>
+  );
+}
+
+function ThemeSwitch({
+  preference,
+  onChange,
+}: {
+  preference: ThemePreference;
+  onChange: (next: ThemePreference) => void;
+}) {
+  return (
+    <div className="theme-switch" role="group" aria-label="主题切换">
+      <button
+        type="button"
+        className={preference === 'system' ? 'theme-chip active' : 'theme-chip'}
+        onClick={() => onChange('system')}
+      >
+        跟随系统
+      </button>
+      <button
+        type="button"
+        className={preference === 'light' ? 'theme-chip active' : 'theme-chip'}
+        onClick={() => onChange('light')}
+      >
+        浅色
+      </button>
+      <button
+        type="button"
+        className={preference === 'dark' ? 'theme-chip active' : 'theme-chip'}
+        onClick={() => onChange('dark')}
+      >
+        深色
+      </button>
+    </div>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <>
+      <section className="hero skeleton-card" aria-hidden="true">
+        <div className="skeleton-stack">
+          <span className="skeleton-line sm" />
+          <span className="skeleton-line lg" />
+          <span className="skeleton-line md" />
+          <span className="skeleton-line md" />
+        </div>
+        <div className="skeleton-block" />
+      </section>
+      <section className="filters skeleton-card" aria-hidden="true">
+        <span className="skeleton-field" />
+        <span className="skeleton-field" />
+        <span className="skeleton-field" />
+        <span className="skeleton-field" />
+        <span className="skeleton-field" />
+        <span className="skeleton-field" />
+      </section>
+      <section className="metrics" aria-hidden="true">
+        <div className="metric skeleton-card" />
+        <div className="metric skeleton-card" />
+        <div className="metric skeleton-card" />
+        <div className="metric skeleton-card" />
+        <div className="metric skeleton-card" />
+        <div className="metric skeleton-card" />
+      </section>
+    </>
   );
 }
 
