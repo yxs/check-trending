@@ -51,19 +51,6 @@ export interface LowTideRun {
   totalClears: number;
 }
 
-export interface HighTideRun {
-  startDate: string;
-  endDate: string;
-  days: number;
-  totalClears: number;
-}
-
-export interface WaveEvent {
-  low: LowTideRun;
-  high: HighTideRun;
-  gapDays: number;
-}
-
 export interface CurrentStatus {
   latestDate: string;
   currentLow: LowTideRun | null;

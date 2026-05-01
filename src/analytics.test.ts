@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildDailyClearSeries,
-  findHighTideRuns,
   buildCurrentStatus,
+  buildDailyClearSeries,
   filterCases,
   findLowTideRuns,
-  findWaveEvents,
-  getDateTickInterval,
-  getDateTickIndexes,
   getCheckDepth,
+  getDateTickIndexes,
   getRegionGroup,
   getVisaGroup,
   getVisaSubtype,
@@ -152,38 +149,6 @@ describe('filtering and daily clear series', () => {
     expect(runs).toEqual([{ startDate: '2026-01-02', endDate: '2026-01-04', days: 3, totalClears: 2 }]);
   });
 
-  it('finds high tide runs across consecutive high-count days', () => {
-    const runs = findHighTideRuns(
-      [
-        { date: '2026-01-01', count: 2, noteCount: 0 },
-        { date: '2026-01-02', count: 8, noteCount: 0 },
-        { date: '2026-01-03', count: 10, noteCount: 0 },
-        { date: '2026-01-04', count: 7, noteCount: 0 },
-        { date: '2026-01-05', count: 9, noteCount: 0 },
-      ],
-      8,
-      2,
-    );
-
-    expect(runs).toEqual([{ startDate: '2026-01-02', endDate: '2026-01-03', days: 2, totalClears: 18 }]);
-  });
-
-  it('pairs low tide runs with following high tide runs', () => {
-    const events = findWaveEvents(
-      [{ startDate: '2026-01-21', endDate: '2026-02-19', days: 30, totalClears: 21 }],
-      [{ startDate: '2026-02-23', endDate: '2026-02-27', days: 5, totalClears: 78 }],
-      10,
-    );
-
-    expect(events).toEqual([
-      {
-        low: { startDate: '2026-01-21', endDate: '2026-02-19', days: 30, totalClears: 21 },
-        high: { startDate: '2026-02-23', endDate: '2026-02-27', days: 5, totalClears: 78 },
-        gapDays: 4,
-      },
-    ]);
-  });
-
   it('builds current status from latest low tide and recent windows', () => {
     const status = buildCurrentStatus(
       [
@@ -199,14 +164,6 @@ describe('filtering and daily clear series', () => {
     expect(status.currentLow).toEqual({ startDate: '2026-01-02', endDate: '2026-01-04', days: 3, totalClears: 2 });
     expect(status.clears7d).toBe(10);
     expect(status.latestDate).toBe('2026-01-04');
-  });
-
-  it('chooses date tick intervals from visible day count', () => {
-    expect(getDateTickInterval(14)).toBe(1);
-    expect(getDateTickInterval(30)).toBe(2);
-    expect(getDateTickInterval(80)).toBe(5);
-    expect(getDateTickInterval(180)).toBe(10);
-    expect(getDateTickInterval(300)).toBe(20);
   });
 
   it('chooses date tick indexes by pixel spacing', () => {

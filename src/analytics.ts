@@ -5,13 +5,11 @@ import type {
   CurrentStatus,
   DailyClearPoint,
   Filters,
-  HighTideRun,
   LowTideRun,
   MovingAveragePoint,
   RegionFilter,
   VisaSubtype,
   VisaGroup,
-  WaveEvent,
 } from './types';
 
 const MAINLAND_CONSULATES = new Set(['BeiJing', 'ShangHai', 'GuangZhou', 'ShenYang', 'WuHan', 'ChengDu']);
@@ -202,57 +200,6 @@ export function findLowTideRuns(series: DailyClearPoint[], maxDailyCount: number
   return runs.sort((left, right) => right.days - left.days || left.startDate.localeCompare(right.startDate));
 }
 
-export function findHighTideRuns(series: DailyClearPoint[], minDailyCount: number, minDays: number): HighTideRun[] {
-  const runs: HighTideRun[] = [];
-  let startDate: string | null = null;
-  let endDate: string | null = null;
-  let days = 0;
-  let totalClears = 0;
-
-  for (const point of series) {
-    if (point.count >= minDailyCount) {
-      startDate ??= point.date;
-      endDate = point.date;
-      days += 1;
-      totalClears += point.count;
-      continue;
-    }
-    if (startDate && endDate && days >= minDays) {
-      runs.push({ startDate, endDate, days, totalClears });
-    }
-    startDate = null;
-    endDate = null;
-    days = 0;
-    totalClears = 0;
-  }
-
-  if (startDate && endDate && days >= minDays) {
-    runs.push({ startDate, endDate, days, totalClears });
-  }
-
-  return runs.sort((left, right) => right.totalClears - left.totalClears || left.startDate.localeCompare(right.startDate));
-}
-
-export function findWaveEvents(lowRuns: LowTideRun[], highRuns: HighTideRun[], maxGapDays: number): WaveEvent[] {
-  return lowRuns
-    .flatMap((low) => {
-      const high = highRuns
-        .filter((candidate) => candidate.startDate > low.endDate)
-        .map((candidate) => ({ candidate, gapDays: daysBetween(low.endDate, candidate.startDate) }))
-        .filter(({ gapDays }) => gapDays <= maxGapDays)
-        .sort((left, right) => left.gapDays - right.gapDays)[0];
-      if (!high) {
-        return [];
-      }
-      return [{
-        low,
-        high: high.candidate,
-        gapDays: high.gapDays,
-      }];
-    })
-    .sort((left, right) => right.low.endDate.localeCompare(left.low.endDate));
-}
-
 export function buildCurrentStatus(series: DailyClearPoint[], maxDailyCount: number, minDays: number): CurrentStatus {
   const latestDate = series[series.length - 1]?.date ?? '';
   const lowRuns = findLowTideRuns(series, maxDailyCount, minDays);
@@ -264,22 +211,6 @@ export function buildCurrentStatus(series: DailyClearPoint[], maxDailyCount: num
     clears14d: sumLastDays(series, 14),
     clears30d: sumLastDays(series, 30),
   };
-}
-
-export function getDateTickInterval(dayCount: number): number {
-  if (dayCount <= 18) {
-    return 1;
-  }
-  if (dayCount <= 45) {
-    return 2;
-  }
-  if (dayCount <= 100) {
-    return 5;
-  }
-  if (dayCount <= 220) {
-    return 10;
-  }
-  return 20;
 }
 
 export function getDateTickIndexes(dates: string[], stepPx: number, minSpacingPx: number): number[] {
@@ -325,12 +256,6 @@ function buildDateRange(startDate: string, endDate: string): string[] {
     current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
-}
-
-function daysBetween(startDate: string, endDate: string): number {
-  const start = new Date(`${startDate}T00:00:00Z`).getTime();
-  const end = new Date(`${endDate}T00:00:00Z`).getTime();
-  return Math.round((end - start) / 86_400_000);
 }
 
 function sumLastDays(series: DailyClearPoint[], days: number): number {
