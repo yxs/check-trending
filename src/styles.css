@@ -365,6 +365,29 @@ h2 {
   background: var(--surface-muted);
 }
 
+.chart-shell {
+  position: relative;
+}
+
+.year-indicator {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 1;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-accent);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+
 .chart-wrap {
   overflow-x: auto;
   overflow-y: hidden;

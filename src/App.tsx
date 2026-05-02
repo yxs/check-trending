@@ -50,6 +50,7 @@ const LOW_TIDE_THRESHOLD_MAP: Record<string, LowTideThreshold> = {
   '2': 2,
   '5': 5,
 };
+const CHART_PADDING = { top: 24, right: 24, bottom: 42, left: 48 } as const;
 const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label: string }>> = {
   all: [{ value: 'all', label: '全部类型' }],
   b: [{ value: 'all', label: 'B1 + B2' }],
@@ -553,22 +554,29 @@ function ClearWaveChart({
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [stickToRight, setStickToRight] = useState(true);
+  const [visibleYear, setVisibleYear] = useState<string>(
+    () => series[series.length - 1]?.date.slice(0, 4) ?? '',
+  );
+
+  const normalizedDayWidth = clamp(dayWidth, 3, 30);
 
   useEffect(() => {
     const wrap = wrapRef.current;
-    if (!wrap || !stickToRight) {
+    if (!wrap) {
       return;
     }
-    wrap.scrollLeft = wrap.scrollWidth - wrap.clientWidth;
-  }, [dayWidth, series.length, stickToRight]);
+    if (stickToRight) {
+      wrap.scrollLeft = wrap.scrollWidth - wrap.clientWidth;
+    }
+    setVisibleYear(computeVisibleYear(wrap, normalizedDayWidth, series));
+  }, [normalizedDayWidth, series, stickToRight]);
 
   if (series.length === 0) {
     return <p className="muted">当前筛选条件下没有 Clear 数据。</p>;
   }
 
   const height = 360;
-  const padding = { top: 24, right: 24, bottom: 42, left: 48 };
-  const normalizedDayWidth = clamp(dayWidth, 3, 30);
+  const padding = CHART_PADDING;
   const slotCount = Math.max(series.length, 1);
   const plotWidth = slotCount * normalizedDayWidth;
   const svgWidth = plotWidth + padding.left + padding.right;
@@ -596,16 +604,22 @@ function ClearWaveChart({
   const axisLabels = pickSpacedAxisLabels(axisLabelCandidates, minLabelSpacingPx);
 
   return (
-    <div
-      className="chart-wrap"
-      ref={wrapRef}
-      onScroll={(event) => {
-        const target = event.currentTarget;
-        const remain = target.scrollWidth - target.clientWidth - target.scrollLeft;
-        setStickToRight(remain < 36);
-      }}
-    >
-      <svg className="chart" width={svgWidth} viewBox={`0 0 ${svgWidth} ${height}`} role="img" aria-label="每日 Clear 趋势图">
+    <div className="chart-shell">
+      <div className="year-indicator" aria-live="polite">{visibleYear}</div>
+      <div
+        className="chart-wrap"
+        ref={wrapRef}
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          const remain = target.scrollWidth - target.clientWidth - target.scrollLeft;
+          setStickToRight(remain < 36);
+          const nextYear = computeVisibleYear(target, normalizedDayWidth, series);
+          if (nextYear && nextYear !== visibleYear) {
+            setVisibleYear(nextYear);
+          }
+        }}
+      >
+        <svg className="chart" width={svgWidth} viewBox={`0 0 ${svgWidth} ${height}`} role="img" aria-label="每日 Clear 趋势图">
         <line x1={padding.left} y1={padding.top + plotHeight} x2={padding.left + plotWidth} y2={padding.top + plotHeight} />
         <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} />
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -658,6 +672,7 @@ function ClearWaveChart({
           </text>
         ))}
       </svg>
+      </div>
     </div>
   );
 }
@@ -840,4 +855,18 @@ function pickSpacedAxisLabels(labels: AxisLabel[], minSpacingPx: number): AxisLa
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function computeVisibleYear(
+  wrap: HTMLDivElement,
+  dayWidth: number,
+  series: DailyClearPoint[],
+): string {
+  if (series.length === 0) {
+    return '';
+  }
+  const centerX = wrap.scrollLeft + wrap.clientWidth / 2;
+  const slot = Math.floor((centerX - CHART_PADDING.left) / dayWidth);
+  const clampedSlot = Math.max(0, Math.min(series.length - 1, slot));
+  return series[clampedSlot].date.slice(0, 4);
 }
