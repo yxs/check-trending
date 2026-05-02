@@ -8,3 +8,4 @@ __pycache__/
 .env.*
 *.log
 .playwright-mcp/
+data/checkee/last_run_summary.json
