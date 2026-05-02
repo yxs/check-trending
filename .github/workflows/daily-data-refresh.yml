@@ -2,8 +2,10 @@ name: Daily Data Refresh
 
 on:
   schedule:
-    # 03:00 Beijing (UTC+8) every day → 19:00 UTC the previous day
-    - cron: "0 19 * * *"
+    # 02:37 Beijing (UTC+8) every day → 18:37 UTC the previous day.
+    # Off-hour minute to avoid GitHub Actions' top-of-hour scheduling spike,
+    # which delays or drops schedule events on free public repos.
+    - cron: "37 18 * * *"
   workflow_dispatch:
     inputs:
       end_date:
