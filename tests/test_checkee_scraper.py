@@ -6,6 +6,7 @@ from pathlib import Path
 
 from check_trending.checkee_scraper import (
     CaseRecord,
+    PoliteHttpClient,
     build_months,
     case_from_detail,
     determine_fetch_required_months,
@@ -14,6 +15,7 @@ from check_trending.checkee_scraper import (
     parse_detail_page,
     parse_month_page,
     previous_month_label,
+    refresh_pending_in_canonical,
     save_monthly_manifest,
     write_outputs,
 )
@@ -100,6 +102,47 @@ def _detail_table_fixture() -> str:
         <script>console.log("noise")</script>
         </body></html>
         """
+
+
+def _make_detail_html(
+    case_number: str,
+    *,
+    status: str = "Clear",
+    check_date: str = "2025-08-12",
+    complete_date: str = "2026-03-05",
+    note: str = "fresh note",
+) -> str:
+    table_open = '<' + 'table width="96%" border="1" align="center" cellspacing="0">'
+    table_close = '<' + '/table>'
+    return f"""<html><body>
+        {table_open}
+          <tr><td>Checkee CaseNum: {case_number}</td><td>Last Name: N/A</td></tr>
+          <tr><td>ID: APAP</td><td>First Name: N/A</td></tr>
+          <tr><td>Check Date: {check_date}</td></tr>
+          <tr><td>Visa Type: B1</td></tr>
+          <tr><td>Visa Entry: New</td></tr>
+          <tr><td>US Consulate: Europe</td></tr>
+          <tr><td>Major: CS</td></tr>
+          <tr><td>Status: {status}</td></tr>
+          <tr><td>Complete Date: {complete_date}</td></tr>
+          <tr><td>Note: {note}</td></tr>
+        {table_close}
+        </body></html>"""
+
+
+class _ScriptedHttpClient(PoliteHttpClient):
+    """PoliteHttpClient stub that returns canned HTML and tracks fetched URLs."""
+
+    def __init__(self, responses: dict[str, str]) -> None:
+        super().__init__(delay_seconds=0, jitter_seconds=0, retries=1, timeout=10)
+        self.responses = responses
+        self.fetched_urls: list[str] = []
+
+    def fetch(self, url: str) -> str:
+        self.fetched_urls.append(url)
+        if url not in self.responses:
+            raise RuntimeError(f"unmocked URL: {url}")
+        return self.responses[url]
 
 
 class CheckeeScraperTest(unittest.TestCase):
@@ -264,6 +307,117 @@ class CheckeeScraperTest(unittest.TestCase):
                 roundtripped,
                 {"2025-07": ["2", "20"], "2025-08": ["1", "10", "100"]},
             )
+
+    def test_refresh_pending_in_canonical_only_touches_non_terminal_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            detail_dir = output_dir / "raw" / "details"
+            detail_dir.mkdir(parents=True)
+
+            canonical = [
+                {
+                    "case_number": "100",
+                    "status": "Pending",
+                    "check_date": "2025-08-12",
+                    "complete_date": None,
+                    "month": "2025-08",
+                },
+                {
+                    "case_number": "200",
+                    "status": "Clear",
+                    "check_date": "2025-08-12",
+                    "complete_date": "2025-09-01",
+                    "month": "2025-08",
+                },
+                {
+                    "case_number": "300",
+                    "status": "Reject",
+                    "check_date": "2025-08-12",
+                    "complete_date": "2025-08-30",
+                    "month": "2025-08",
+                },
+            ]
+            (output_dir / "checkee_cases.json").write_text(
+                json.dumps(canonical, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            client = _ScriptedHttpClient({
+                "https://www.checkee.info/personal_detail.php?casenum=100": _make_detail_html(
+                    "100", status="Clear", note="now cleared"
+                ),
+            })
+
+            refreshed = refresh_pending_in_canonical(
+                output_dir=output_dir,
+                detail_dir=detail_dir,
+                client=client,
+                start_date=date(2025, 7, 1),
+                end_date=date(2026, 5, 1),
+            )
+
+            self.assertEqual(set(refreshed.keys()), {"100"})
+            self.assertEqual(refreshed["100"].status, "Clear")
+            self.assertEqual(refreshed["100"].detail["Note"], "now cleared")
+            self.assertEqual(
+                client.fetched_urls,
+                ["https://www.checkee.info/personal_detail.php?casenum=100"],
+            )
+
+    def test_refresh_pending_in_canonical_skips_already_refreshed_case_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            detail_dir = output_dir / "raw" / "details"
+            detail_dir.mkdir(parents=True)
+
+            canonical = [
+                {"case_number": "100", "status": "Pending", "month": "2025-08"},
+                {"case_number": "200", "status": "Pending", "month": "2025-08"},
+            ]
+            (output_dir / "checkee_cases.json").write_text(
+                json.dumps(canonical, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            client = _ScriptedHttpClient({
+                "https://www.checkee.info/personal_detail.php?casenum=200": _make_detail_html(
+                    "200", status="Clear"
+                ),
+            })
+
+            refreshed = refresh_pending_in_canonical(
+                output_dir=output_dir,
+                detail_dir=detail_dir,
+                client=client,
+                start_date=date(2025, 7, 1),
+                end_date=date(2026, 5, 1),
+                skip_case_numbers={"100"},
+            )
+
+            self.assertEqual(set(refreshed.keys()), {"200"})
+            self.assertNotIn(
+                "https://www.checkee.info/personal_detail.php?casenum=100",
+                client.fetched_urls,
+            )
+
+    def test_refresh_pending_in_canonical_returns_empty_when_no_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            detail_dir = output_dir / "raw" / "details"
+            detail_dir.mkdir(parents=True)
+
+            client = _ScriptedHttpClient({})
+
+            refreshed = refresh_pending_in_canonical(
+                output_dir=output_dir,
+                detail_dir=detail_dir,
+                client=client,
+                start_date=date(2025, 7, 1),
+                end_date=date(2026, 5, 1),
+            )
+
+            self.assertEqual(refreshed, {})
+            self.assertEqual(client.fetched_urls, [])
 
     def test_write_outputs_merges_with_existing_canonical_by_case_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
