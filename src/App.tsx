@@ -27,7 +27,7 @@ import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePrefer
 import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
 
 const DEFAULT_FILTERS: Filters = {
-  checkDepth: 'gte60',
+  checkDepth: 'all',
   noteCohort: 'all',
   region: 'all',
   selectedDate: null,
