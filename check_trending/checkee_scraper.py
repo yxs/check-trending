@@ -1,60 +1,111 @@
+"""Checkee.info scraper with two clean paths.
+
+Path 1 — Daily Refresh (`daily` subcommand, runs in CI):
+  detail-page only (no main.php → no Cloudflare). Each run does:
+    * Frontier probe: scan max_known+1 .. max_known+probe_count to find new
+      case_numbers.
+    * Pending bucket: refresh canonical Pending where case_number % 3 == today's
+      weekday-derived bucket. With Tue/Thu/Sat schedule, every Pending case is
+      refreshed exactly once per week.
+
+Path 2 — Manual Calibration (`calibrate` subcommand, runs locally):
+  Headed browser, hits main.php (Cloudflare-gated). Each run does:
+    * Decide which months to fetch (current + previous always; earlier months
+      only if not previously calibrated, per `monthly_calibration_log.json`).
+    * Fetch listings → update `monthly_case_ids.json`.
+    * Diff vs canonical → fetch any missed detail pages via urllib.
+    * Write reconciliation report.
+
+Detail pages have NO Cloudflare challenge (verified empirically), but they are
+behaviorally rate-limited; ~0.2 req/s sustained is the soft cap. Stay polite.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import random
 import re
+import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
 
+
+# =============================================================================
+# Constants
+# =============================================================================
 
 BASE_URL = "https://www.checkee.info"
-PUBLIC_BASE_URL = "https://www.checkee.info"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+# Real browser UA strings; rotated per request to weaken pattern-detection.
+USER_AGENT_POOL: tuple[str, ...] = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
 )
-DETAIL_KEYS = {
-    "Check Date",
-    "Checkee CaseNum",
-    "Complete Date",
-    "Country",
-    "Degree",
-    "Employer",
-    "First Name",
-    "ID",
-    "Job Title",
-    "Last Name",
-    "Major",
-    "Note",
-    "Status",
-    "US Consulate",
-    "University(College)",
-    "Visa Entry",
-    "Visa Type",
+
+DETAIL_KEYS = frozenset({
+    "Check Date", "Checkee CaseNum", "Complete Date", "Country", "Degree",
+    "Employer", "First Name", "ID", "Job Title", "Last Name", "Major", "Note",
+    "Status", "US Consulate", "University(College)", "Visa Entry", "Visa Type",
     "Years in Usa",
-}
+})
+
 CANONICAL_CASES_FILE = "checkee_cases.json"
 MONTHLY_MANIFEST_FILE = "monthly_case_ids.json"
+CALIBRATION_LOG_FILE = "monthly_calibration_log.json"
+SUMMARY_FILE = "crawl_summary.json"
 RECONCILIATION_REPORTS_DIR = Path("reports") / "reconciliation"
+
+# Marker pair used to trim detail HTML down to the case-info table only.
+# The literal table-open tag is split across concat to avoid blob tools mis-
+# detecting this source file as a detail-page during history rewrites.
 DETAIL_TABLE_START_MARKER = (
-    '<' + 'table width="96%" border="1" align="center" cellspacing="0">'
+    "<" + 'table width="96%" border="1" align="center" cellspacing="0">'
 )
-DETAIL_TABLE_END_MARKER = '<' + '/table>'
-LEGACY_DATA_FILE_PATTERN = re.compile(
-    r"checkee_cases_(?P<start>\d{4}-\d{2}-\d{2})_to_(?P<end>\d{4}-\d{2}-\d{2})\.json$"
-)
-MONTHLY_BUFFER_DAY_OF_MONTH = 15
+DETAIL_TABLE_END_MARKER = "<" + "/table>"
+
 TERMINAL_STATUSES = frozenset({"Clear", "Reject"})
 
+# Default project-wide data window. Anything before this is out of scope.
+DEFAULT_START_DATE = date(2025, 7, 1)
+
+# Bucket selection uses Beijing weekday so the scheduled mapping holds
+# regardless of runner timezone. CI runs in UTC; the cron `37 18 * * 1,3,5`
+# fires Mon/Wed/Fri 18:37 UTC, which is Tue/Thu/Sat 02:37 Beijing.
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+# =============================================================================
+# Exceptions
+# =============================================================================
+
+class FetchError(Exception):
+    """A single fetch failed after all retries; caller decides what to do."""
+
+
+class CircuitBreakerError(Exception):
+    """Too many consecutive fetch failures — abort the entire run."""
+
+
+# =============================================================================
+# Dataclasses
+# =============================================================================
 
 @dataclass(frozen=True)
 class Cell:
@@ -85,6 +136,34 @@ class CaseRecord:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass
+class RunStats:
+    """Per-run counters surfaced to logs and the GitHub workflow summary."""
+    attempts: int = 0
+    successes: int = 0
+    failures: int = 0
+    new_cases_discovered: int = 0
+    pending_refreshed: int = 0
+    pending_status_changed: int = 0
+    skipped_terminal: int = 0
+    skipped_out_of_bucket: int = 0
+
+    @property
+    def failure_rate(self) -> float:
+        if self.attempts == 0:
+            return 0.0
+        return self.failures / self.attempts
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["failure_rate_pct"] = round(self.failure_rate * 100, 2)
+        return d
+
+
+# =============================================================================
+# HTML parsing  (kept verbatim — these are the stable parts)
+# =============================================================================
 
 class TableParser(HTMLParser):
     def __init__(self) -> None:
@@ -128,25 +207,16 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(value)).strip()
 
 
-def build_months(start: date, end: date) -> list[str]:
-    months: list[str] = []
-    year = start.year
-    month = start.month
-    while (year, month) <= (end.year, end.month):
-        months.append(f"{year:04d}-{month:02d}")
-        if month == 12:
-            year += 1
-            month = 1
-        else:
-            month += 1
-    return months
-
-
-def parse_month_page(html: str, month: str, start_date: date, end_date: date | None = None) -> list[CaseRecord]:
+def parse_month_page(
+    html: str,
+    month: str,
+    start_date: date,
+    end_date: date | None = None,
+) -> list[CaseRecord]:
     parser = TableParser()
     parser.feed(html)
     cases: list[CaseRecord] = []
-    source_url = f"{PUBLIC_BASE_URL}/main.php?dispdate={month}"
+    source_url = f"{BASE_URL}/main.php?dispdate={month}"
 
     for row in parser.rows:
         if len(row) < 11:
@@ -227,7 +297,7 @@ def extract_case_number(row: list[Cell]) -> str | None:
 
 
 def build_detail_url(case_number: str) -> str:
-    return f"{PUBLIC_BASE_URL}/personal_detail.php?casenum={case_number}"
+    return f"{BASE_URL}/personal_detail.php?casenum={case_number}"
 
 
 def parse_date(value: str) -> date | None:
@@ -250,29 +320,38 @@ def parse_int(value: str) -> int | None:
         return None
 
 
-def find_latest_legacy_source(output_dir: Path) -> Path | None:
-    candidates: list[tuple[str, Path]] = []
-    for path in output_dir.glob("checkee_cases_*_to_*.json"):
-        match = LEGACY_DATA_FILE_PATTERN.match(path.name)
-        if not match:
-            continue
-        candidates.append((match.group("end"), path))
-    if not candidates:
-        return None
-    _, latest_path = max(candidates, key=lambda item: item[0])
-    return latest_path
+# =============================================================================
+# Date helpers
+# =============================================================================
 
+def build_months(start: date, end: date) -> list[str]:
+    months: list[str] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        months.append(f"{year:04d}-{month:02d}")
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+    return months
+
+
+def previous_month_label(month_label: str) -> str:
+    year = int(month_label[:4])
+    month = int(month_label[5:7])
+    if month == 1:
+        return f"{year - 1:04d}-12"
+    return f"{year:04d}-{month - 1:02d}"
+
+
+# =============================================================================
+# Storage
+# =============================================================================
 
 def find_existing_case_source(output_dir: Path) -> Path | None:
     canonical_path = output_dir / CANONICAL_CASES_FILE
-    if canonical_path.exists():
-        return canonical_path
-    return find_latest_legacy_source(output_dir)
-
-
-def get_max_known_case_number(output_dir: Path) -> int:
-    _, max_case = get_known_case_bounds(output_dir)
-    return max_case
+    return canonical_path if canonical_path.exists() else None
 
 
 def get_known_case_bounds(output_dir: Path) -> tuple[int, int]:
@@ -294,43 +373,12 @@ def get_known_case_bounds(output_dir: Path) -> tuple[int, int]:
     return (min(case_numbers), max(case_numbers))
 
 
-class PoliteHttpClient:
-    def __init__(self, delay_seconds: float, jitter_seconds: float, retries: int, timeout: int) -> None:
-        self.delay_seconds = delay_seconds
-        self.jitter_seconds = jitter_seconds
-        self.retries = retries
-        self.timeout = timeout
-
-    def fetch(self, url: str) -> str:
-        last_error: Exception | None = None
-        for attempt in range(1, self.retries + 1):
-            self._sleep(attempt)
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    return response.read().decode("utf-8", "ignore")
-            except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as error:
-                last_error = error
-                print(f"fetch failed attempt={attempt} url={url} error={error}", flush=True)
-        raise RuntimeError(f"failed to fetch {url}") from last_error
-
-    def _sleep(self, attempt: int) -> None:
-        delay = self.delay_seconds + random.uniform(0, self.jitter_seconds)
-        if attempt > 1:
-            delay += min(60, 2 ** attempt)
-        time.sleep(delay)
+def get_max_known_case_number(output_dir: Path) -> int:
+    return get_known_case_bounds(output_dir)[1]
 
 
 def sort_case_numbers(case_numbers: set[str] | list[str]) -> list[str]:
     return sorted(case_numbers, key=lambda value: int(value))
-
-
-def previous_month_label(month_label: str) -> str:
-    year = int(month_label[:4])
-    month = int(month_label[5:7])
-    if month == 1:
-        return f"{year - 1:04d}-12"
-    return f"{year:04d}-{month - 1:02d}"
 
 
 def load_monthly_manifest(output_dir: Path) -> dict[str, list[str]]:
@@ -361,492 +409,141 @@ def save_monthly_manifest(output_dir: Path, manifest: dict[str, list[str]]) -> N
     )
 
 
-def determine_fetch_required_months(
-    end_date: date,
-    months: list[str],
-    manifest: dict[str, list[str]],
-    force_all: bool = False,
-) -> set[str]:
-    """Pick which monthly listings need a fresh main.php fetch.
-
-    Always re-fetches the current month. Within the buffer window (day-of-month
-    <= MONTHLY_BUFFER_DAY_OF_MONTH) also re-fetches the previous month so
-    late-arriving submissions are caught. Months in scope that are not yet in
-    the manifest are added too. ``force_all`` forces every in-scope month.
-    """
-    months_in_scope = set(months)
-    if force_all:
-        return set(months_in_scope)
-
-    fetch_required: set[str] = set()
-    current_month = f"{end_date.year:04d}-{end_date.month:02d}"
-    fetch_required.add(current_month)
-    if end_date.day <= MONTHLY_BUFFER_DAY_OF_MONTH:
-        fetch_required.add(previous_month_label(current_month))
-
-    for month in months:
-        if month not in manifest:
-            fetch_required.add(month)
-
-    return fetch_required & months_in_scope
-
-
-def crawl_checkee(
-    start_date: date,
-    end_date: date,
-    output_dir: Path,
-    delay_seconds: float,
-    jitter_seconds: float,
-    retries: int,
-    timeout: int,
-    refresh_monthly: bool,
-    run_reconciliation: bool,
-    probe_count: int,
-    refresh_pending: bool = True,
-    merge_with_canonical: bool = True,
-    monthly_fetcher: Callable[[str], str] | None = None,
-) -> list[CaseRecord]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    detail_dir = output_dir / "raw" / "details"
-    detail_dir.mkdir(parents=True, exist_ok=True)
-
-    client = PoliteHttpClient(delay_seconds, jitter_seconds, retries, timeout)
-    monthly_fetch: Callable[[str], str] = monthly_fetcher or client.fetch
-    months = build_months(start_date, end_date)
-    manifest = load_monthly_manifest(output_dir)
-    fetch_required = determine_fetch_required_months(
-        end_date, months, manifest, force_all=refresh_monthly
-    )
-
-    cases_by_number: dict[str, CaseRecord] = {}
-    all_known_case_numbers: set[str] = set()
-
-    for month in months:
-        if month in fetch_required:
-            month_url = f"{BASE_URL}/main.php?dispdate={month}"
-            month_html = monthly_fetch(month_url)
-            month_cases = parse_month_page(
-                month_html, month=month, start_date=start_date, end_date=end_date
-            )
-            print(f"month={month} cases={len(month_cases)} (fetched)", flush=True)
-            manifest[month] = sort_case_numbers({case.case_number for case in month_cases})
-            for case in month_cases:
-                cases_by_number[case.case_number] = case
-                all_known_case_numbers.add(case.case_number)
-        else:
-            month_case_numbers = manifest.get(month, [])
-            print(f"month={month} cases={len(month_case_numbers)} (manifest)", flush=True)
-            all_known_case_numbers.update(month_case_numbers)
-
-    if not all_known_case_numbers:
-        raise RuntimeError(
-            "No monthly cases parsed and manifest is empty. "
-            "Refusing to overwrite canonical dataset with empty results. "
-            "Likely cause: Cloudflare challenge blocking main.php fetches "
-            "or upstream HTML schema change."
-        )
-
-    save_monthly_manifest(output_dir, manifest)
-
-    monthly_cases = [
-        cases_by_number[case_number]
-        for case_number in sort_case_numbers(set(cases_by_number.keys()))
-    ]
-    records = collect_records_for_monthly_cases(
-        monthly_cases=monthly_cases,
-        start_date=start_date,
-        end_date=end_date,
-        detail_dir=detail_dir,
-        client=client,
-    )
-
-    if refresh_pending:
-        refreshed = refresh_pending_in_canonical(
-            output_dir=output_dir,
-            detail_dir=detail_dir,
-            client=client,
-            start_date=start_date,
-            end_date=end_date,
-            skip_case_numbers={record.case_number for record in records},
-        )
-        records_by_number = {record.case_number: record for record in records}
-        for case_number, record in refreshed.items():
-            records_by_number[case_number] = record
-        records = sorted(
-            records_by_number.values(), key=lambda item: (item.check_date, item.case_number)
-        )
-
-    if run_reconciliation:
-        reconciliation = run_id_reconciliation(
-            output_dir=output_dir,
-            detail_dir=detail_dir,
-            client=client,
-            start_date=start_date,
-            end_date=end_date,
-            all_known_case_numbers=all_known_case_numbers,
-            probe_count=probe_count,
-        )
-        if reconciliation.brute_force_only_records:
-            records_by_number = {record.case_number: record for record in records}
-            for case_number, record in reconciliation.brute_force_only_records.items():
-                records_by_number[case_number] = record
-            records = sorted(
-                records_by_number.values(),
-                key=lambda item: (item.check_date, item.case_number),
-            )
-
-    write_outputs(
-        records,
-        output_dir,
-        start_date,
-        end_date,
-        merge_with_canonical=merge_with_canonical,
-    )
-    return records
-
-
-def collect_records_for_monthly_cases(
-    monthly_cases: list[CaseRecord],
-    start_date: date,
-    end_date: date,
-    detail_dir: Path,
-    client: PoliteHttpClient,
-) -> list[CaseRecord]:
-    records: list[CaseRecord] = []
-    total = len(monthly_cases)
-
-    for index, monthly_case in enumerate(monthly_cases, start=1):
-        case_number = monthly_case.case_number
-        detail_html_path = detail_dir / f"{case_number}.html"
-        detail_url = f"{BASE_URL}/personal_detail.php?casenum={case_number}"
-        cached_html = detail_html_path.read_text(encoding="utf-8", errors="ignore") if detail_html_path.exists() else None
-        cached_record = None
-        if cached_html is not None:
-            cached_detail = parse_detail_page(cached_html, case_number)
-            cached_record = case_from_detail(cached_detail, start_date, end_date)
-
-        force_fetch = cached_html is None or cached_record is None
-        if cached_record is not None and cached_record.status not in TERMINAL_STATUSES:
-            force_fetch = True
-
-        try:
-            detail_html = read_or_fetch(
-                detail_html_path,
-                detail_url,
-                client,
-                force_fetch=force_fetch,
-                trim_detail_html=True,
-            )
-        except RuntimeError:
-            if cached_html is not None:
-                detail_html = cached_html
-                print(f"using cached detail for case={case_number} after fetch failure", flush=True)
-            else:
-                detail_html = ""
-                print(f"using monthly fallback for case={case_number} after fetch failure", flush=True)
-
-        detail = parse_detail_page(detail_html, case_number) if detail_html else {"case_number": case_number}
-        record = case_from_detail(detail, start_date, end_date)
-        if record is None:
-            if cached_record is not None:
-                record = cached_record
-            else:
-                # Keep monthly-list coverage when detail page has transient issues.
-                record = monthly_case.with_detail({"case_number": case_number, "Note": detail.get("Note", "")})
-        records.append(record)
-        has_note = bool(record.detail and record.detail.get("Note"))
-        print(f"detail={index}/{total} case={case_number} note={has_note}", flush=True)
-
-    records.sort(key=lambda item: (item.check_date, item.case_number))
-    return records
-
-
-def discover_case_numbers_by_range(
-    start_date: date,
-    end_date: date,
-    detail_dir: Path,
-    client: PoliteHttpClient,
-    scan_start_case: int,
-    scan_end_case: int,
-    known_max_case: int,
-) -> tuple[set[str], dict[str, CaseRecord]]:
-    discovered: set[str] = set()
-    discovered_records: dict[str, CaseRecord] = {}
-    total = scan_end_case - scan_start_case + 1
-    print(
-        f"reconciliation_scan start={scan_start_case} end={scan_end_case} total={total} known_max={known_max_case}",
-        flush=True,
-    )
-
-    for offset, case_number_int in enumerate(range(scan_start_case, scan_end_case + 1), start=1):
-        case_number = str(case_number_int)
-        detail_html_path = detail_dir / f"{case_number}.html"
-        detail_url = f"{BASE_URL}/personal_detail.php?casenum={case_number}"
-        cached_html = detail_html_path.read_text(encoding="utf-8", errors="ignore") if detail_html_path.exists() else None
-        cached_record = None
-        if cached_html is not None:
-            cached_detail = parse_detail_page(cached_html, case_number)
-            cached_record = case_from_detail(cached_detail, start_date, end_date)
-
-        force_fetch = cached_html is None or cached_record is None or case_number_int > known_max_case
-        try:
-            detail_html = read_or_fetch(
-                detail_html_path,
-                detail_url,
-                client,
-                force_fetch=force_fetch,
-                trim_detail_html=True,
-            )
-        except RuntimeError:
-            if cached_html is not None:
-                detail_html = cached_html
-            else:
-                continue
-
-        detail = parse_detail_page(detail_html, case_number)
-        record = case_from_detail(detail, start_date, end_date)
-        if record is not None:
-            discovered.add(case_number)
-            discovered_records[case_number] = record
-
-        if offset % 100 == 0:
-            print(
-                f"reconciliation_progress scanned={offset}/{total} discovered={len(discovered)}",
-                flush=True,
-            )
-
-    return discovered, discovered_records
-
-
-@dataclass(frozen=True)
-class ReconciliationResult:
-    monthly_case_numbers: frozenset[str]
-    brute_force_case_numbers: frozenset[str]
-    brute_force_only_records: dict[str, CaseRecord]
-    scan_start_case: int
-    scan_end_case: int
-
-
-def run_id_reconciliation(
-    output_dir: Path,
-    detail_dir: Path,
-    client: PoliteHttpClient,
-    start_date: date,
-    end_date: date,
-    all_known_case_numbers: set[str],
-    probe_count: int,
-) -> ReconciliationResult:
-    known_min_case, known_max_case = get_known_case_bounds(output_dir)
-    monthly_case_numbers_int = [int(case_number) for case_number in all_known_case_numbers]
-
-    if monthly_case_numbers_int:
-        scan_start_candidates = [min(monthly_case_numbers_int)]
-        if known_min_case > 0:
-            scan_start_candidates.append(known_min_case)
-        scan_start_case = min(scan_start_candidates)
-        scan_end_case = max(max(monthly_case_numbers_int), known_max_case) + max(0, probe_count)
-    else:
-        scan_start_case = known_min_case if known_min_case > 0 else 0
-        scan_end_case = known_max_case + max(0, probe_count)
-
-    brute_force_case_numbers, brute_force_records = discover_case_numbers_by_range(
-        start_date=start_date,
-        end_date=end_date,
-        detail_dir=detail_dir,
-        client=client,
-        scan_start_case=scan_start_case,
-        scan_end_case=scan_end_case,
-        known_max_case=known_max_case,
-    )
-
-    monthly_only = sort_case_numbers(all_known_case_numbers - brute_force_case_numbers)
-    brute_force_only_sorted = sort_case_numbers(brute_force_case_numbers - all_known_case_numbers)
-    brute_force_only_records = {
-        case_number: brute_force_records[case_number]
-        for case_number in brute_force_only_sorted
-        if case_number in brute_force_records
-    }
-
-    report_dir = output_dir / RECONCILIATION_REPORTS_DIR
-    report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"{end_date.strftime('%Y-%m')}.json"
-
-    report = {
-        "source": "monthly-vs-detail-range-id-reconciliation",
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-        "scan_start_case": scan_start_case,
-        "scan_end_case": scan_end_case,
-        "probe_count": probe_count,
-        "monthly_case_count": len(all_known_case_numbers),
-        "brute_force_case_count": len(brute_force_case_numbers),
-        "matched_case_count": len(set(all_known_case_numbers) & brute_force_case_numbers),
-        "monthly_only_case_count": len(monthly_only),
-        "brute_force_only_case_count": len(brute_force_only_sorted),
-        "monthly_only_case_numbers": monthly_only,
-        "brute_force_only_case_numbers": brute_force_only_sorted,
-        "auto_merged_count": len(brute_force_only_records),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    print(
-        "reconciliation_result "
-        f"monthly={report['monthly_case_count']} "
-        f"brute_force={report['brute_force_case_count']} "
-        f"matched={report['matched_case_count']} "
-        f"monthly_only={report['monthly_only_case_count']} "
-        f"brute_force_only={report['brute_force_only_case_count']} "
-        f"auto_merged={report['auto_merged_count']}",
-        flush=True,
-    )
-
-    return ReconciliationResult(
-        monthly_case_numbers=frozenset(all_known_case_numbers),
-        brute_force_case_numbers=frozenset(brute_force_case_numbers),
-        brute_force_only_records=brute_force_only_records,
-        scan_start_case=scan_start_case,
-        scan_end_case=scan_end_case,
-    )
-
-
-def refresh_pending_in_canonical(
-    output_dir: Path,
-    detail_dir: Path,
-    client: PoliteHttpClient,
-    start_date: date,
-    end_date: date,
-    skip_case_numbers: set[str] | None = None,
-) -> dict[str, CaseRecord]:
-    """Force re-fetch detail pages for canonical cases not yet in a terminal status.
-
-    Cases listed in ``skip_case_numbers`` are bypassed (typically those already
-    refreshed by the monthly path during the same run).
-    """
-    canonical_path = output_dir / CANONICAL_CASES_FILE
-    if not canonical_path.exists():
+def load_calibration_log(output_dir: Path) -> dict[str, str]:
+    """Returns {month_label: ISO date this month was last calibrated}."""
+    path = output_dir / CALIBRATION_LOG_FILE
+    if not path.exists():
         return {}
     try:
-        existing = json.loads(canonical_path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str)}
 
-    skip = skip_case_numbers or set()
-    targets: list[str] = []
-    for record in existing:
-        case_number = str(record.get("case_number", ""))
-        if not case_number or case_number in skip:
-            continue
-        if record.get("status") in TERMINAL_STATUSES:
-            continue
-        targets.append(case_number)
 
-    if not targets:
-        return {}
-
-    print(f"refresh_pending: scanning {len(targets)} non-terminal cases", flush=True)
-    refreshed: dict[str, CaseRecord] = {}
-    for index, case_number in enumerate(targets, start=1):
-        detail_html_path = detail_dir / f"{case_number}.html"
-        detail_url = f"{BASE_URL}/personal_detail.php?casenum={case_number}"
-        try:
-            detail_html = read_or_fetch(
-                detail_html_path,
-                detail_url,
-                client,
-                force_fetch=True,
-                trim_detail_html=True,
-            )
-        except RuntimeError:
-            print(f"refresh_pending: skip case={case_number} after fetch failure", flush=True)
-            continue
-        detail = parse_detail_page(detail_html, case_number)
-        record = case_from_detail(detail, start_date, end_date)
-        if record is not None:
-            refreshed[case_number] = record
-        if index % 25 == 0:
-            print(
-                f"refresh_pending: {index}/{len(targets)} processed (refreshed={len(refreshed)})",
-                flush=True,
-            )
-    print(
-        f"refresh_pending: done refreshed={len(refreshed)}/{len(targets)}",
-        flush=True,
+def save_calibration_log(output_dir: Path, log: dict[str, str]) -> None:
+    path = output_dir / CALIBRATION_LOG_FILE
+    payload = {month: log[month] for month in sorted(log.keys())}
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    return refreshed
 
 
-def crawl_detail_range(
-    start_date: date,
-    end_date: date,
-    output_dir: Path,
-    case_number_start: int,
-    case_number_end: int,
-    delay_seconds: float,
-    jitter_seconds: float,
-    retries: int,
-    timeout: int,
-    merge_with_canonical: bool = True,
-) -> list[CaseRecord]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    detail_dir = output_dir / "raw" / "details"
-    detail_dir.mkdir(parents=True, exist_ok=True)
+def determine_calibration_targets(
+    today: date,
+    available_months: Iterable[str],
+    log: dict[str, str],
+) -> list[str]:
+    """Pick which months to (re)calibrate.
 
-    client = PoliteHttpClient(delay_seconds, jitter_seconds, retries, timeout)
-    max_known_case = get_max_known_case_number(output_dir)
-    print(f"max_known_case={max_known_case}", flush=True)
-    records: list[CaseRecord] = []
-    total = case_number_end - case_number_start + 1
+    Hard rule: current month + previous month always.
+    Earlier months: only if not present in `log`.
 
-    for offset, case_number_int in enumerate(range(case_number_start, case_number_end + 1), start=1):
-        case_number = str(case_number_int)
-        detail_html_path = detail_dir / f"{case_number}.html"
-        detail_url = f"{BASE_URL}/personal_detail.php?casenum={case_number}"
-        cached_html = detail_html_path.read_text(encoding="utf-8", errors="ignore") if detail_html_path.exists() else None
-        cached_record = None
-        if cached_html is not None:
-            cached_detail = parse_detail_page(cached_html, case_number)
-            cached_record = case_from_detail(cached_detail, start_date, end_date)
-        should_refresh_pending = cached_record is not None and cached_record.status not in TERMINAL_STATUSES
-        should_probe_frontier = case_number_int > max_known_case
-        force_fetch = cached_html is None or should_refresh_pending or should_probe_frontier
-        try:
-            detail_html = read_or_fetch(
-                detail_html_path,
-                detail_url,
-                client,
-                force_fetch=force_fetch,
-                trim_detail_html=True,
+    Day-of-month does not enter the decision — we always cover the buffer
+    window via the "previous month always" rule.
+    """
+    current = f"{today.year:04d}-{today.month:02d}"
+    prev = previous_month_label(current)
+
+    must = {current, prev}
+    available = set(available_months) | must
+    needs_first_calibration = {m for m in available if m not in log}
+
+    targets = (must | needs_first_calibration) & available
+    return sorted(targets)
+
+
+# =============================================================================
+# HTTP client
+# =============================================================================
+
+class PoliteHttpClient:
+    """Polite urllib client with UA rotation, jitter, long pauses, and a
+    consecutive-failure circuit breaker.
+
+    The defaults are sized for ≤ 0.2 req/s sustained — well below the
+    empirically-measured throttle threshold.
+    """
+
+    def __init__(
+        self,
+        delay_seconds: float = 3.0,
+        jitter_seconds: float = 4.0,
+        retries: int = 1,
+        timeout: int = 30,
+        long_pause_every: int = 25,
+        long_pause_min: float = 15.0,
+        long_pause_max: float = 45.0,
+        consecutive_failure_limit: int = 5,
+        user_agents: Iterable[str] = USER_AGENT_POOL,
+    ) -> None:
+        self.delay_seconds = delay_seconds
+        self.jitter_seconds = jitter_seconds
+        self.retries = retries
+        self.timeout = timeout
+        self.long_pause_every = long_pause_every
+        self.long_pause_min = long_pause_min
+        self.long_pause_max = long_pause_max
+        self.consecutive_failure_limit = consecutive_failure_limit
+        self._user_agents = tuple(user_agents)
+        self._fetch_count = 0
+        self._consecutive_failures = 0
+
+    def fetch(self, url: str) -> str:
+        self._fetch_count += 1
+        if self._fetch_count > 1 and (self._fetch_count - 1) % self.long_pause_every == 0:
+            self._long_pause()
+
+        ua = random.choice(self._user_agents) if self._user_agents else ""
+        last_error: Exception | None = None
+        for attempt in range(1, self.retries + 1):
+            self._sleep(attempt)
+            try:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": ua} if ua else {}
+                )
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    self._consecutive_failures = 0
+                    return response.read().decode("utf-8", "ignore")
+            except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as error:
+                last_error = error
+                code = getattr(error, "code", "-")
+                print(
+                    f"fetch failed attempt={attempt} url={url} status={code} error={error}",
+                    flush=True,
+                )
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.consecutive_failure_limit:
+            raise CircuitBreakerError(
+                f"{self._consecutive_failures} consecutive fetch failures; "
+                f"last url={url}"
             )
-        except RuntimeError:
-            if cached_html is not None:
-                detail_html = cached_html
-                print(f"using cached detail for case={case_number} after fetch failure", flush=True)
-            else:
-                print(f"skipped case={case_number} because fetch failed and no cache was found", flush=True)
-                continue
-        detail = parse_detail_page(detail_html, case_number)
-        record = case_from_detail(detail, start_date, end_date)
-        if record is not None:
-            records.append(record)
-        if offset % 25 == 0 or record is not None:
-            status = "included" if record is not None else "scanned"
-            print(f"{status}={offset}/{total} case={case_number} records={len(records)}", flush=True)
+        raise FetchError(f"failed to fetch {url}") from last_error
 
-    records.sort(key=lambda item: (item.check_date, item.case_number))
-    write_outputs(
-        records,
-        output_dir,
-        start_date,
-        end_date,
-        merge_with_canonical=merge_with_canonical,
-    )
-    return records
+    def _sleep(self, attempt: int) -> None:
+        delay = self.delay_seconds + random.uniform(0, self.jitter_seconds)
+        if attempt > 1:
+            delay += min(30, 2 ** attempt)
+        time.sleep(delay)
+
+    def _long_pause(self) -> None:
+        pause = random.uniform(self.long_pause_min, self.long_pause_max)
+        print(
+            f"long_pause seconds={pause:.1f} after_fetches={self._fetch_count - 1}",
+            flush=True,
+        )
+        time.sleep(pause)
 
 
-def case_from_detail(detail: dict[str, str], start_date: date, end_date: date) -> CaseRecord | None:
+# =============================================================================
+# Detail-page → CaseRecord
+# =============================================================================
+
+def case_from_detail(
+    detail: dict[str, str], start_date: date, end_date: date
+) -> CaseRecord | None:
     check_date_value = detail.get("Check Date", "")
     check_date = parse_date(check_date_value)
     if check_date is None or check_date < start_date or check_date > end_date:
@@ -873,7 +570,9 @@ def case_from_detail(detail: dict[str, str], start_date: date, end_date: date) -
     )
 
 
-def compute_waiting_days(check_date_value: str, complete_date_value: str | None, end_date: date) -> int | None:
+def compute_waiting_days(
+    check_date_value: str, complete_date_value: str | None, end_date: date
+) -> int | None:
     check_date = parse_date(check_date_value)
     if check_date is None:
         return None
@@ -882,45 +581,337 @@ def compute_waiting_days(check_date_value: str, complete_date_value: str | None,
     return (terminal_date - check_date).days
 
 
-def read_or_fetch(
-    path: Path,
-    url: str,
+def fetch_and_cache_detail(
+    case_number: str,
+    detail_dir: Path,
     client: PoliteHttpClient,
-    force_fetch: bool = False,
-    trim_detail_html: bool = False,
 ) -> str:
-    if path.exists() and not force_fetch:
-        cached_html = path.read_text(encoding="utf-8", errors="ignore")
-        if trim_detail_html:
-            compact_html = extract_detail_table_html(cached_html)
-            if compact_html is not None and compact_html != cached_html:
-                path.write_text(compact_html, encoding="utf-8")
-                return compact_html
-        return cached_html
-    html = client.fetch(url)
-    if trim_detail_html:
-        compact_html = extract_detail_table_html(html)
-        if compact_html is not None:
-            html = compact_html
-    path.write_text(html, encoding="utf-8")
+    """Fetch one detail page, trim to detail-table HTML, and persist to cache.
+
+    Raises FetchError on permanent failure (CircuitBreakerError propagates).
+    """
+    detail_path = detail_dir / f"{case_number}.html"
+    detail_url = build_detail_url(case_number)
+    html = client.fetch(detail_url)
+    compact = extract_detail_table_html(html)
+    if compact is not None:
+        html = compact
+    detail_path.write_text(html, encoding="utf-8")
     return html
 
 
+# =============================================================================
+# Path 1: Daily Refresh
+# =============================================================================
+
+# Tue (1) → bucket 0, Thu (3) → bucket 1, Sat (5) → bucket 2.
+# Other weekdays (manual dispatch) fall back to bucket 0.
+_WEEKDAY_TO_BUCKET = {1: 0, 3: 1, 5: 2}
+NUM_PENDING_BUCKETS = 3
+
+
+def weekday_to_bucket(weekday: int) -> int:
+    return _WEEKDAY_TO_BUCKET.get(weekday, 0)
+
+
+def select_pending_for_bucket(
+    canonical: list[dict[str, Any]], bucket: int, num_buckets: int = NUM_PENDING_BUCKETS
+) -> list[str]:
+    """Return canonical case_numbers that are non-terminal and fall in bucket.
+
+    Bucket assignment is deterministic by `int(case_number) % num_buckets`,
+    ensuring each Pending case is visited in exactly one bucket per cycle.
+    """
+    selected: list[str] = []
+    for record in canonical:
+        if record.get("status") in TERMINAL_STATUSES:
+            continue
+        case_number_str = str(record.get("case_number", "")).strip()
+        try:
+            case_number_int = int(case_number_str)
+        except ValueError:
+            continue
+        if case_number_int % num_buckets != bucket:
+            continue
+        selected.append(case_number_str)
+    return sort_case_numbers(selected)
+
+
+def crawl_daily(
+    *,
+    start_date: date,
+    end_date: date,
+    output_dir: Path,
+    probe_count: int,
+    bucket: int,
+    client: PoliteHttpClient,
+    fetch_budget: int,
+) -> RunStats:
+    """Path 1: detail-only refresh.
+
+    Refreshes the bucket-selected Pending cases, then frontier-probes for new
+    cases above `max_known`. No main.php. No silent fallback to cache: a fetch
+    failure leaves the canonical record untouched and is counted.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    detail_dir = output_dir / "raw" / "details"
+    detail_dir.mkdir(parents=True, exist_ok=True)
+
+    canonical_path = output_dir / CANONICAL_CASES_FILE
+    canonical: list[dict[str, Any]] = []
+    if canonical_path.exists():
+        try:
+            canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            canonical = []
+
+    canonical_by_number: dict[str, dict[str, Any]] = {
+        str(r.get("case_number", "")): r for r in canonical if r.get("case_number")
+    }
+
+    stats = RunStats()
+    max_known = get_max_known_case_number(output_dir)
+
+    pending_targets = select_pending_for_bucket(canonical, bucket)
+    print(
+        f"daily_run start bucket={bucket} pending_in_bucket={len(pending_targets)} "
+        f"max_known={max_known} probe_count={probe_count} budget={fetch_budget}",
+        flush=True,
+    )
+
+    refresh_targets = list(pending_targets)
+    random.shuffle(refresh_targets)
+
+    # ---- Pending bucket refresh ----
+    for case_number in refresh_targets:
+        if stats.attempts >= fetch_budget:
+            print(f"fetch_budget_reached attempts={stats.attempts}", flush=True)
+            break
+        stats.attempts += 1
+        prev_record = canonical_by_number.get(case_number)
+        prev_status = prev_record.get("status") if prev_record else None
+        try:
+            html = fetch_and_cache_detail(case_number, detail_dir, client)
+        except FetchError:
+            stats.failures += 1
+            continue
+        stats.successes += 1
+        stats.pending_refreshed += 1
+        detail = parse_detail_page(html, case_number)
+        record = case_from_detail(detail, start_date, end_date)
+        if record is None:
+            continue
+        canonical_by_number[case_number] = record.to_dict()
+        if record.status != prev_status:
+            stats.pending_status_changed += 1
+            print(
+                f"pending_status_change case={case_number} {prev_status}→{record.status}",
+                flush=True,
+            )
+
+    # ---- Frontier probe ----
+    probe_start = max_known + 1
+    probe_end = max_known + max(0, probe_count)
+    probe_range = list(range(probe_start, probe_end + 1))
+    random.shuffle(probe_range)
+    for case_number_int in probe_range:
+        if stats.attempts >= fetch_budget:
+            print(f"fetch_budget_reached attempts={stats.attempts}", flush=True)
+            break
+        case_number = str(case_number_int)
+        if case_number in canonical_by_number:
+            continue
+        stats.attempts += 1
+        try:
+            html = fetch_and_cache_detail(case_number, detail_dir, client)
+        except FetchError:
+            stats.failures += 1
+            continue
+        stats.successes += 1
+        detail = parse_detail_page(html, case_number)
+        record = case_from_detail(detail, start_date, end_date)
+        if record is None:
+            # Case_number doesn't exist or check_date out of range. Treat as
+            # quiet — the placeholder page returns 200 but parses to no record.
+            continue
+        canonical_by_number[case_number] = record.to_dict()
+        stats.new_cases_discovered += 1
+        print(f"new_case_discovered case={case_number}", flush=True)
+
+    # ---- Write merged canonical ----
+    merged = sorted(
+        canonical_by_number.values(),
+        key=lambda r: (r.get("check_date", ""), str(r.get("case_number", ""))),
+    )
+    write_outputs(
+        records=None,
+        output_dir=output_dir,
+        start_date=start_date,
+        end_date=end_date,
+        merged_records=merged,
+    )
+    return stats
+
+
+# =============================================================================
+# Path 2: Manual Calibration
+# =============================================================================
+
+def crawl_calibrate(
+    *,
+    start_date: date,
+    end_date: date,
+    output_dir: Path,
+    monthly_fetcher: Callable[[str], str],
+    detail_client: PoliteHttpClient,
+) -> dict[str, Any]:
+    """Path 2: monthly-listing calibration via headed browser.
+
+    Decides which months to fetch using `monthly_calibration_log.json`; updates
+    `monthly_case_ids.json`; for any case_id present in a listing but missing
+    from canonical, fetches the detail page and merges. Writes a per-run
+    reconciliation report. Does NOT refresh existing Pending — Path 1 owns
+    that.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    detail_dir = output_dir / "raw" / "details"
+    detail_dir.mkdir(parents=True, exist_ok=True)
+
+    canonical_path = output_dir / CANONICAL_CASES_FILE
+    canonical: list[dict[str, Any]] = []
+    if canonical_path.exists():
+        try:
+            canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            canonical = []
+    canonical_by_number: dict[str, dict[str, Any]] = {
+        str(r.get("case_number", "")): r for r in canonical if r.get("case_number")
+    }
+
+    months_in_scope = build_months(start_date, end_date)
+    log = load_calibration_log(output_dir)
+    manifest = load_monthly_manifest(output_dir)
+
+    targets = determine_calibration_targets(end_date, months_in_scope, log)
+    skipped = sorted(set(months_in_scope) - set(targets))
+    print(
+        f"calibrate_targets count={len(targets)} months={targets} "
+        f"skipped_already_calibrated={skipped}",
+        flush=True,
+    )
+
+    today_iso = end_date.isoformat()
+    listings_collected: dict[str, list[CaseRecord]] = {}
+    for month in targets:
+        month_url = f"{BASE_URL}/main.php?dispdate={month}"
+        print(f"calibrate_fetch_listing month={month}", flush=True)
+        month_html = monthly_fetcher(month_url)
+        month_cases = parse_month_page(
+            month_html, month=month, start_date=start_date, end_date=end_date
+        )
+        listings_collected[month] = month_cases
+        manifest[month] = sort_case_numbers({c.case_number for c in month_cases})
+        log[month] = today_iso
+        print(
+            f"calibrate_listing_done month={month} "
+            f"cases_in_listing={len(month_cases)}",
+            flush=True,
+        )
+
+    save_monthly_manifest(output_dir, manifest)
+    save_calibration_log(output_dir, log)
+
+    # ---- Diff vs canonical → fetch missing details (urllib) ----
+    listing_ids: set[str] = set()
+    listing_records: dict[str, CaseRecord] = {}
+    for cases in listings_collected.values():
+        for c in cases:
+            listing_ids.add(c.case_number)
+            listing_records[c.case_number] = c
+
+    missing = sorted(listing_ids - set(canonical_by_number.keys()), key=lambda v: int(v))
+    print(f"calibrate_missing_from_canonical count={len(missing)}", flush=True)
+
+    fetched_missing: list[str] = []
+    for case_number in missing:
+        try:
+            html = fetch_and_cache_detail(case_number, detail_dir, detail_client)
+        except FetchError:
+            print(f"calibrate_fetch_failed case={case_number}", flush=True)
+            continue
+        detail = parse_detail_page(html, case_number)
+        record = case_from_detail(detail, start_date, end_date)
+        if record is None:
+            # Fall back to monthly-listing data if detail page can't be parsed.
+            record = listing_records[case_number]
+        canonical_by_number[case_number] = record.to_dict()
+        fetched_missing.append(case_number)
+
+    merged = sorted(
+        canonical_by_number.values(),
+        key=lambda r: (r.get("check_date", ""), str(r.get("case_number", ""))),
+    )
+    write_outputs(
+        records=None,
+        output_dir=output_dir,
+        start_date=start_date,
+        end_date=end_date,
+        merged_records=merged,
+    )
+
+    report = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "calibrated_months": targets,
+        "skipped_already_calibrated_months": skipped,
+        "listing_cases_total": len(listing_ids),
+        "missing_from_canonical": missing,
+        "newly_added_to_canonical": fetched_missing,
+        "still_missing": sorted(set(missing) - set(fetched_missing), key=lambda v: int(v)),
+    }
+    report_dir = output_dir / RECONCILIATION_REPORTS_DIR
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{end_date.strftime('%Y-%m-%d')}.json"
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    print(f"calibrate_report_written path={report_path}", flush=True)
+    return report
+
+
+# =============================================================================
+# Output writing
+# =============================================================================
+
 def write_outputs(
-    records: list[CaseRecord],
+    records: list[CaseRecord] | None,
     output_dir: Path,
     start_date: date,
     end_date: date,
-    merge_with_canonical: bool = False,
+    *,
+    merged_records: list[dict[str, Any]] | None = None,
 ) -> None:
-    json_path = output_dir / CANONICAL_CASES_FILE
-    summary_path = output_dir / "crawl_summary.json"
+    """Persist canonical + summary.
 
-    new_dictionaries = [record.to_dict() for record in records]
-    if merge_with_canonical and json_path.exists():
-        try:
-            existing = json.loads(json_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+    Two calling conventions:
+      - `records` only: caller supplies a fresh list; merge with existing
+        canonical by case_number (legacy behavior, used by tests).
+      - `merged_records` provided: caller has already merged in-memory; just
+        persist as-is. Path 1 / Path 2 use this form.
+    """
+    json_path = output_dir / CANONICAL_CASES_FILE
+    summary_path = output_dir / SUMMARY_FILE
+
+    if merged_records is not None:
+        dictionaries = list(merged_records)
+    else:
+        new_dictionaries = [r.to_dict() for r in (records or [])]
+        if json_path.exists():
+            try:
+                existing = json.loads(json_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                existing = []
+        else:
             existing = []
         merged_by_number: dict[str, dict[str, Any]] = {
             str(record.get("case_number", "")): record
@@ -936,8 +927,6 @@ def write_outputs(
                 str(record.get("case_number", "")),
             ),
         )
-    else:
-        dictionaries = new_dictionaries
 
     json_path.write_text(
         json.dumps(dictionaries, ensure_ascii=False, indent=2, sort_keys=True),
@@ -947,13 +936,11 @@ def write_outputs(
     summary = {
         **_summary_range(dictionaries, start_date, end_date),
         "case_count": len(dictionaries),
-        "detail_count": sum(1 for record in dictionaries if record.get("detail")),
+        "detail_count": sum(1 for r in dictionaries if r.get("detail")),
         "note_count": sum(
-            1
-            for record in dictionaries
-            if record.get("detail") and record["detail"].get("Note")
+            1 for r in dictionaries if r.get("detail") and r["detail"].get("Note")
         ),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
@@ -962,11 +949,8 @@ def write_outputs(
 
 
 def _summary_range(
-    dictionaries: list[dict[str, Any]],
-    start_date: date,
-    end_date: date,
+    dictionaries: list[dict[str, Any]], start_date: date, end_date: date
 ) -> dict[str, str]:
-    """Compute summary start/end that contain every observed check/complete date."""
     observed: list[str] = []
     for record in dictionaries:
         check_date_value = record.get("check_date")
@@ -981,134 +965,154 @@ def _summary_range(
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
         }
-
     return {
         "start_date": min(start_date.isoformat(), min(observed)),
         "end_date": max(end_date.isoformat(), max(observed)),
     }
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Slowly crawl public Checkee.info case data.")
-    parser.add_argument("--start-date", default="2025-07-01")
-    parser.add_argument("--end-date", default=date.today().isoformat())
-    parser.add_argument("--output-dir", default="data/checkee")
-    parser.add_argument("--source", choices=("monthly", "detail-range"), default="monthly")
-    parser.add_argument(
-        "--mode",
-        choices=("daily", "reconcile"),
-        default="daily",
-        help=(
-            "daily: monthly fetch (current+buffer) + pending refresh + canonical merge. "
-            "reconcile: also run detail-range ID reconciliation with auto-merge of "
-            "brute-force-only IDs."
-        ),
+# =============================================================================
+# CLI
+# =============================================================================
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Checkee.info scraper: daily refresh + manual calibration.",
     )
-    parser.add_argument("--case-number-start", type=int)
-    parser.add_argument("--case-number-end", type=int)
-    parser.add_argument(
-        "--run-reconciliation",
-        action="store_true",
-        help="Deprecated; prefer --mode reconcile (kept for backward compatibility).",
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    daily = sub.add_parser(
+        "daily",
+        help="Path 1: detail-page refresh (CI). Frontier probe + Pending bucket.",
     )
-    parser.add_argument("--probe-count", type=int, default=40)
-    parser.add_argument("--delay-seconds", type=float, default=1.75)
-    parser.add_argument("--jitter-seconds", type=float, default=1.25)
-    parser.add_argument("--retries", type=int, default=4)
-    parser.add_argument("--timeout", type=int, default=30)
-    parser.add_argument(
-        "--refresh-monthly",
-        action="store_true",
-        help=(
-            "Force re-fetch every month in scope (overrides manifest cache). "
-            "Useful for the very first bootstrap or when the manifest is suspected stale."
-        ),
+    daily.add_argument("--start-date", default=DEFAULT_START_DATE.isoformat())
+    daily.add_argument("--end-date", default=date.today().isoformat())
+    daily.add_argument("--output-dir", default="data/checkee")
+    daily.add_argument(
+        "--probe-count", type=int, default=80,
+        help="Frontier probe size (forward IDs above max_known).",
     )
-    parser.add_argument(
-        "--no-refresh-pending",
-        action="store_true",
-        help="Disable force-refresh of canonical cases that are not in a terminal status.",
+    daily.add_argument(
+        "--bucket", default="auto",
+        help="0/1/2 (forces a specific Pending bucket) or 'auto' (from weekday).",
     )
-    parser.add_argument(
-        "--no-merge-with-canonical",
-        action="store_true",
-        help=(
-            "Disable merging into the existing canonical dataset (default writes merged "
-            "results, preserving cases outside this run's scope)."
-        ),
+    daily.add_argument(
+        "--fetch-budget", type=int, default=1000,
+        help="Hard cap on attempts per run (defense against runaway).",
     )
-    parser.add_argument(
-        "--monthly-fetcher",
-        choices=("urllib", "browser"),
-        default="urllib",
-        help=(
-            "Transport for main.php?dispdate=... fetches. 'urllib' is plain HTTP "
-            "(blocked by Cloudflare in production). 'browser' uses patchright + "
-            "system Chrome to solve the JS challenge (pair with xvfb-run on Linux)."
-        ),
+    daily.add_argument("--delay-seconds", type=float, default=3.0)
+    daily.add_argument("--jitter-seconds", type=float, default=4.0)
+    daily.add_argument("--retries", type=int, default=1)
+    daily.add_argument("--timeout", type=int, default=30)
+    daily.add_argument("--max-failure-rate", type=float, default=0.20,
+                       help="Exit non-zero if failures/attempts exceeds this.")
+
+    calib = sub.add_parser(
+        "calibrate",
+        help="Path 2: monthly-listing reconciliation (local, headed browser).",
     )
-    return parser.parse_args()
+    calib.add_argument("--start-date", default=DEFAULT_START_DATE.isoformat())
+    calib.add_argument("--end-date", default=date.today().isoformat())
+    calib.add_argument("--output-dir", default="data/checkee")
+    calib.add_argument(
+        "--headless", action="store_true",
+        help="Run browser headless (default is headed so you can watch CF solve).",
+    )
+    calib.add_argument("--delay-seconds", type=float, default=3.0)
+    calib.add_argument("--jitter-seconds", type=float, default=4.0)
+    calib.add_argument("--retries", type=int, default=1)
+    calib.add_argument("--timeout", type=int, default=30)
+
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
-    run_reconciliation = args.run_reconciliation or args.mode == "reconcile"
-    refresh_pending = not args.no_refresh_pending
-    merge_with_canonical = not args.no_merge_with_canonical
+    output_dir = Path(args.output_dir)
 
-    if args.source == "monthly":
-        if args.monthly_fetcher == "browser":
-            from check_trending.cf_fetcher import BrowserFetcher
+    if args.command == "daily":
+        if args.bucket == "auto":
+            beijing_weekday = datetime.now(BEIJING_TZ).weekday()
+            bucket = weekday_to_bucket(beijing_weekday)
+        else:
+            bucket = int(args.bucket)
+            if bucket not in (0, 1, 2):
+                raise ValueError(f"--bucket must be 0/1/2, got {args.bucket}")
 
-            with BrowserFetcher() as browser:
-                crawl_checkee(
-                    start_date=start_date,
-                    end_date=end_date,
-                    output_dir=Path(args.output_dir),
-                    delay_seconds=args.delay_seconds,
-                    jitter_seconds=args.jitter_seconds,
-                    retries=args.retries,
-                    timeout=args.timeout,
-                    refresh_monthly=args.refresh_monthly,
-                    run_reconciliation=run_reconciliation,
-                    probe_count=args.probe_count,
-                    refresh_pending=refresh_pending,
-                    merge_with_canonical=merge_with_canonical,
-                    monthly_fetcher=browser.fetch,
-                )
-            return
-        crawl_checkee(
-            start_date=start_date,
-            end_date=end_date,
-            output_dir=Path(args.output_dir),
+        client = PoliteHttpClient(
             delay_seconds=args.delay_seconds,
             jitter_seconds=args.jitter_seconds,
             retries=args.retries,
             timeout=args.timeout,
-            refresh_monthly=args.refresh_monthly,
-            run_reconciliation=run_reconciliation,
-            probe_count=args.probe_count,
-            refresh_pending=refresh_pending,
-            merge_with_canonical=merge_with_canonical,
         )
-        return
-    if args.case_number_start is None or args.case_number_end is None:
-        raise ValueError("detail-range source requires both --case-number-start and --case-number-end")
-    crawl_detail_range(
-        start_date=start_date,
-        end_date=end_date,
-        output_dir=Path(args.output_dir),
-        case_number_start=args.case_number_start,
-        case_number_end=args.case_number_end,
-        delay_seconds=args.delay_seconds,
-        jitter_seconds=args.jitter_seconds,
-        retries=args.retries,
-        timeout=args.timeout,
-        merge_with_canonical=merge_with_canonical,
+        try:
+            stats = crawl_daily(
+                start_date=start_date,
+                end_date=end_date,
+                output_dir=output_dir,
+                probe_count=args.probe_count,
+                bucket=bucket,
+                client=client,
+                fetch_budget=args.fetch_budget,
+            )
+        except CircuitBreakerError as error:
+            print(f"CIRCUIT_BREAKER {error}", flush=True)
+            return 2
+
+        _write_run_summary(output_dir, "daily", stats.to_dict() | {"bucket": bucket})
+        if stats.attempts > 0 and stats.failure_rate > args.max_failure_rate:
+            print(
+                f"failure_rate_exceeded rate={stats.failure_rate:.3f} "
+                f"limit={args.max_failure_rate}",
+                flush=True,
+            )
+            return 3
+        return 0
+
+    if args.command == "calibrate":
+        try:
+            from check_trending.cf_fetcher import BrowserFetcher
+        except ImportError as error:
+            print(
+                "patchright not installed. `pip install patchright && "
+                "patchright install chromium --no-shell` first.",
+                flush=True,
+            )
+            raise SystemExit(1) from error
+
+        detail_client = PoliteHttpClient(
+            delay_seconds=args.delay_seconds,
+            jitter_seconds=args.jitter_seconds,
+            retries=args.retries,
+            timeout=args.timeout,
+        )
+        with BrowserFetcher(headless=args.headless) as browser:
+            report = crawl_calibrate(
+                start_date=start_date,
+                end_date=end_date,
+                output_dir=output_dir,
+                monthly_fetcher=browser.fetch,
+                detail_client=detail_client,
+            )
+        _write_run_summary(output_dir, "calibrate", report)
+        return 0
+
+    raise ValueError(f"unknown command: {args.command}")
+
+
+def _write_run_summary(output_dir: Path, command: str, payload: dict[str, Any]) -> None:
+    summary = {
+        "command": command,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **payload,
+    }
+    (output_dir / "last_run_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
     )
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
