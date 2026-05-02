@@ -322,8 +322,7 @@ h2 {
 }
 
 .section-heading p,
-.muted,
-.notes {
+.muted {
   color: var(--text-secondary);
   line-height: 1.7;
 }
@@ -652,10 +651,6 @@ a {
   min-width: 280px;
   max-width: 460px;
   line-height: 1.5;
-}
-
-.notes {
-  padding-left: 18px;
 }
 
 .error {
