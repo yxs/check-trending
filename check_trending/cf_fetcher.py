@@ -1,13 +1,14 @@
 """Cloudflare-aware fetcher for main.php monthly listings.
 
-Checkee.info gates ``main.php?dispdate=YYYY-MM`` behind a Cloudflare managed
-JS challenge. urllib / requests / curl_cffi cannot solve it because the
-challenge enforces JS execution and a real Chrome browser fingerprint.
+`main.php?dispdate=YYYY-MM` is gated by a Cloudflare managed JS challenge that
+plain HTTP clients (urllib / requests / curl_cffi) cannot solve — it requires
+a real browser fingerprint.
 
-This module wraps `patchright` (a stealth fork of Playwright) running headed
-against the system Chrome. On CI it pairs with ``xvfb-run`` to provide a
-virtual display. Detail pages are not gated and continue to use the plain
-urllib-based ``PoliteHttpClient``.
+This module wraps `patchright` (a stealth fork of Playwright) and is intended
+for **local manual runs only** (Path 2 — calibration). It defaults to headed
+mode so a human can watch the CF challenge resolve. Detail pages
+(`personal_detail.php`) are NOT JS-challenged and continue to use the plain
+urllib client in `PoliteHttpClient`.
 """
 from __future__ import annotations
 
@@ -20,8 +21,8 @@ CHALLENGE_TITLE_FRAGMENT = "Just a moment"
 class BrowserFetcher:
     """Maintains a single patchright browser session across multiple URL fetches.
 
-    Designed to be used as a context manager so the browser is launched once
-    per scraper run and closed cleanly even on failure::
+    Use as a context manager so the browser is launched once per run and closed
+    cleanly even on failure::
 
         with BrowserFetcher() as fetcher:
             html = fetcher.fetch(url)
@@ -54,9 +55,8 @@ class BrowserFetcher:
             from patchright.sync_api import sync_playwright
         except ImportError as error:
             raise RuntimeError(
-                "patchright is not installed. Install it via "
-                "`pip install patchright` (and on Linux CI pair with "
-                "`xvfb-run` so the headed browser has a display)."
+                "patchright is not installed. Run: "
+                "`pip install patchright && patchright install chromium --no-shell`"
             ) from error
 
         self._playwright = sync_playwright().start()
@@ -90,7 +90,9 @@ class BrowserFetcher:
         page = self._page
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms)
+            page.goto(
+                url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms
+            )
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"browser navigation failed for {url}: {error}") from error
 

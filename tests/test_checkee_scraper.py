@@ -7,16 +7,20 @@ from pathlib import Path
 from check_trending.checkee_scraper import (
     CaseRecord,
     PoliteHttpClient,
+    USER_AGENT_POOL,
     build_months,
     case_from_detail,
-    determine_fetch_required_months,
+    determine_calibration_targets,
     extract_detail_table_html,
+    load_calibration_log,
     load_monthly_manifest,
     parse_detail_page,
     parse_month_page,
     previous_month_label,
-    refresh_pending_in_canonical,
+    save_calibration_log,
     save_monthly_manifest,
+    select_pending_for_bucket,
+    weekday_to_bucket,
     write_outputs,
 )
 
@@ -104,62 +108,14 @@ def _detail_table_fixture() -> str:
         """
 
 
-def _make_detail_html(
-    case_number: str,
-    *,
-    status: str = "Clear",
-    check_date: str = "2025-08-12",
-    complete_date: str = "2026-03-05",
-    note: str = "fresh note",
-) -> str:
-    table_open = '<' + 'table width="96%" border="1" align="center" cellspacing="0">'
-    table_close = '<' + '/table>'
-    return f"""<html><body>
-        {table_open}
-          <tr><td>Checkee CaseNum: {case_number}</td><td>Last Name: N/A</td></tr>
-          <tr><td>ID: APAP</td><td>First Name: N/A</td></tr>
-          <tr><td>Check Date: {check_date}</td></tr>
-          <tr><td>Visa Type: B1</td></tr>
-          <tr><td>Visa Entry: New</td></tr>
-          <tr><td>US Consulate: Europe</td></tr>
-          <tr><td>Major: CS</td></tr>
-          <tr><td>Status: {status}</td></tr>
-          <tr><td>Complete Date: {complete_date}</td></tr>
-          <tr><td>Note: {note}</td></tr>
-        {table_close}
-        </body></html>"""
-
-
-class _ScriptedHttpClient(PoliteHttpClient):
-    """PoliteHttpClient stub that returns canned HTML and tracks fetched URLs."""
-
-    def __init__(self, responses: dict[str, str]) -> None:
-        super().__init__(delay_seconds=0, jitter_seconds=0, retries=1, timeout=10)
-        self.responses = responses
-        self.fetched_urls: list[str] = []
-
-    def fetch(self, url: str) -> str:
-        self.fetched_urls.append(url)
-        if url not in self.responses:
-            raise RuntimeError(f"unmocked URL: {url}")
-        return self.responses[url]
-
-
-class CheckeeScraperTest(unittest.TestCase):
+class HtmlParsingTest(unittest.TestCase):
     def test_build_months_includes_start_and_end_month(self) -> None:
         self.assertEqual(
             build_months(date(2025, 7, 1), date(2026, 4, 29)),
             [
-                "2025-07",
-                "2025-08",
-                "2025-09",
-                "2025-10",
-                "2025-11",
-                "2025-12",
-                "2026-01",
-                "2026-02",
-                "2026-03",
-                "2026-04",
+                "2025-07", "2025-08", "2025-09", "2025-10",
+                "2025-11", "2025-12", "2026-01", "2026-02",
+                "2026-03", "2026-04",
             ],
         )
 
@@ -219,10 +175,7 @@ class CheckeeScraperTest(unittest.TestCase):
 
         detail = parse_detail_page(html, "843475")
 
-        self.assertNotIn(
-            "var scJsHost = ((\"https",
-            detail,
-        )
+        self.assertNotIn("var scJsHost = ((\"https", detail)
 
     def test_extract_detail_table_html_keeps_only_detail_table(self) -> None:
         extracted = extract_detail_table_html(_detail_table_fixture())
@@ -255,43 +208,8 @@ class CheckeeScraperTest(unittest.TestCase):
         self.assertEqual(previous_month_label("2026-01"), "2025-12")
         self.assertEqual(previous_month_label("2026-05"), "2026-04")
 
-    def test_determine_fetch_required_includes_buffer_within_15(self) -> None:
-        months = ["2025-07", "2025-08", "2026-04", "2026-05"]
-        manifest = {month: ["1"] for month in months}
 
-        required_early = determine_fetch_required_months(
-            end_date=date(2026, 5, 10), months=months, manifest=manifest
-        )
-        self.assertEqual(required_early, {"2026-04", "2026-05"})
-
-        required_late = determine_fetch_required_months(
-            end_date=date(2026, 5, 20), months=months, manifest=manifest
-        )
-        self.assertEqual(required_late, {"2026-05"})
-
-    def test_determine_fetch_required_pulls_in_months_missing_from_manifest(self) -> None:
-        months = ["2025-07", "2025-08", "2025-09", "2026-05"]
-        manifest = {"2025-07": ["1"], "2026-05": ["2"]}
-
-        required = determine_fetch_required_months(
-            end_date=date(2026, 5, 20), months=months, manifest=manifest
-        )
-
-        self.assertEqual(required, {"2025-08", "2025-09", "2026-05"})
-
-    def test_determine_fetch_required_force_all_overrides(self) -> None:
-        months = ["2025-07", "2025-08", "2026-05"]
-        manifest = {month: ["1"] for month in months}
-
-        required = determine_fetch_required_months(
-            end_date=date(2026, 5, 20),
-            months=months,
-            manifest=manifest,
-            force_all=True,
-        )
-
-        self.assertEqual(required, set(months))
-
+class StorageTest(unittest.TestCase):
     def test_monthly_manifest_round_trips_and_sorts_case_numbers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
@@ -308,117 +226,123 @@ class CheckeeScraperTest(unittest.TestCase):
                 {"2025-07": ["2", "20"], "2025-08": ["1", "10", "100"]},
             )
 
-    def test_refresh_pending_in_canonical_only_touches_non_terminal_cases(self) -> None:
+    def test_calibration_log_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
-            detail_dir = output_dir / "raw" / "details"
-            detail_dir.mkdir(parents=True)
+            log = {"2025-07": "2026-04-29", "2025-08": "2026-04-30"}
 
-            canonical = [
-                {
-                    "case_number": "100",
-                    "status": "Pending",
-                    "check_date": "2025-08-12",
-                    "complete_date": None,
-                    "month": "2025-08",
-                },
-                {
-                    "case_number": "200",
-                    "status": "Clear",
-                    "check_date": "2025-08-12",
-                    "complete_date": "2025-09-01",
-                    "month": "2025-08",
-                },
-                {
-                    "case_number": "300",
-                    "status": "Reject",
-                    "check_date": "2025-08-12",
-                    "complete_date": "2025-08-30",
-                    "month": "2025-08",
-                },
-            ]
-            (output_dir / "checkee_cases.json").write_text(
-                json.dumps(canonical, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            save_calibration_log(output_dir, log)
+            roundtripped = load_calibration_log(output_dir)
 
-            client = _ScriptedHttpClient({
-                "https://www.checkee.info/personal_detail.php?casenum=100": _make_detail_html(
-                    "100", status="Clear", note="now cleared"
-                ),
-            })
+            self.assertEqual(roundtripped, log)
 
-            refreshed = refresh_pending_in_canonical(
-                output_dir=output_dir,
-                detail_dir=detail_dir,
-                client=client,
-                start_date=date(2025, 7, 1),
-                end_date=date(2026, 5, 1),
-            )
 
-            self.assertEqual(set(refreshed.keys()), {"100"})
-            self.assertEqual(refreshed["100"].status, "Clear")
-            self.assertEqual(refreshed["100"].detail["Note"], "now cleared")
-            self.assertEqual(
-                client.fetched_urls,
-                ["https://www.checkee.info/personal_detail.php?casenum=100"],
-            )
+class CalibrationTargetsTest(unittest.TestCase):
+    def test_empty_log_includes_all_in_scope_months(self) -> None:
+        targets = determine_calibration_targets(
+            today=date(2026, 5, 2),
+            available_months=["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
+            log={},
+        )
+        # Empty log → every month needs first calibration; also current+previous.
+        self.assertEqual(
+            targets,
+            ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
+        )
 
-    def test_refresh_pending_in_canonical_skips_already_refreshed_case_numbers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp)
-            detail_dir = output_dir / "raw" / "details"
-            detail_dir.mkdir(parents=True)
+    def test_full_log_includes_only_current_and_previous(self) -> None:
+        log = {m: "2026-04-15" for m in ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"]}
+        targets = determine_calibration_targets(
+            today=date(2026, 5, 2),
+            available_months=list(log.keys()),
+            log=log,
+        )
+        self.assertEqual(targets, ["2026-04", "2026-05"])
 
-            canonical = [
-                {"case_number": "100", "status": "Pending", "month": "2025-08"},
-                {"case_number": "200", "status": "Pending", "month": "2025-08"},
-            ]
-            (output_dir / "checkee_cases.json").write_text(
-                json.dumps(canonical, ensure_ascii=False),
-                encoding="utf-8",
-            )
+    def test_log_missing_one_earlier_month_recovers_it(self) -> None:
+        log = {"2025-12": "2026-04-15", "2026-01": "2026-04-15", "2026-03": "2026-04-15", "2026-04": "2026-04-15", "2026-05": "2026-04-15"}
+        targets = determine_calibration_targets(
+            today=date(2026, 5, 2),
+            available_months=["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
+            log=log,
+        )
+        # Always: 2026-04 + 2026-05. Plus 2026-02 (uncalibrated).
+        self.assertEqual(targets, ["2026-02", "2026-04", "2026-05"])
 
-            client = _ScriptedHttpClient({
-                "https://www.checkee.info/personal_detail.php?casenum=200": _make_detail_html(
-                    "200", status="Clear"
-                ),
-            })
+    def test_january_year_boundary(self) -> None:
+        log = {"2025-12": "2025-12-30", "2026-01": "2026-01-15"}
+        targets = determine_calibration_targets(
+            today=date(2026, 1, 5),
+            available_months=["2025-11", "2025-12", "2026-01"],
+            log=log,
+        )
+        # Current=2026-01, previous=2025-12. 2025-11 already calibrated? No,
+        # 2025-11 not in log → also pulled in.
+        self.assertEqual(targets, ["2025-11", "2025-12", "2026-01"])
 
-            refreshed = refresh_pending_in_canonical(
-                output_dir=output_dir,
-                detail_dir=detail_dir,
-                client=client,
-                start_date=date(2025, 7, 1),
-                end_date=date(2026, 5, 1),
-                skip_case_numbers={"100"},
-            )
 
-            self.assertEqual(set(refreshed.keys()), {"200"})
-            self.assertNotIn(
-                "https://www.checkee.info/personal_detail.php?casenum=100",
-                client.fetched_urls,
-            )
+class PendingBucketTest(unittest.TestCase):
+    def test_select_pending_for_bucket_partitions_evenly_by_modulo(self) -> None:
+        canonical = [
+            {"case_number": str(n), "status": "Pending"} for n in range(100, 130)
+        ]
+        b0 = select_pending_for_bucket(canonical, bucket=0)
+        b1 = select_pending_for_bucket(canonical, bucket=1)
+        b2 = select_pending_for_bucket(canonical, bucket=2)
 
-    def test_refresh_pending_in_canonical_returns_empty_when_no_canonical(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp)
-            detail_dir = output_dir / "raw" / "details"
-            detail_dir.mkdir(parents=True)
+        self.assertEqual(set(b0) | set(b1) | set(b2), {str(n) for n in range(100, 130)})
+        self.assertEqual(set(b0) & set(b1), set())
+        self.assertEqual(set(b0) & set(b2), set())
+        self.assertEqual(set(b1) & set(b2), set())
+        # All buckets within ±1 of len/3.
+        self.assertTrue(abs(len(b0) - 10) <= 1)
+        self.assertTrue(abs(len(b1) - 10) <= 1)
+        self.assertTrue(abs(len(b2) - 10) <= 1)
 
-            client = _ScriptedHttpClient({})
+    def test_select_pending_for_bucket_excludes_terminal(self) -> None:
+        canonical = [
+            {"case_number": "100", "status": "Clear"},
+            {"case_number": "101", "status": "Pending"},
+            {"case_number": "102", "status": "Reject"},
+            {"case_number": "103", "status": "Pending"},
+        ]
+        # 100 % 3 == 1 → Clear, skip
+        # 101 % 3 == 2 → Pending → bucket 2
+        # 102 % 3 == 0 → Reject, skip
+        # 103 % 3 == 1 → Pending → bucket 1
+        self.assertEqual(select_pending_for_bucket(canonical, bucket=2), ["101"])
+        self.assertEqual(select_pending_for_bucket(canonical, bucket=1), ["103"])
+        self.assertEqual(select_pending_for_bucket(canonical, bucket=0), [])
 
-            refreshed = refresh_pending_in_canonical(
-                output_dir=output_dir,
-                detail_dir=detail_dir,
-                client=client,
-                start_date=date(2025, 7, 1),
-                end_date=date(2026, 5, 1),
-            )
+    def test_select_pending_skips_non_numeric_case_numbers(self) -> None:
+        canonical = [
+            {"case_number": "ABC", "status": "Pending"},
+            {"case_number": "123", "status": "Pending"},
+        ]
+        all_buckets = (
+            select_pending_for_bucket(canonical, 0)
+            + select_pending_for_bucket(canonical, 1)
+            + select_pending_for_bucket(canonical, 2)
+        )
+        self.assertEqual(all_buckets, ["123"])
 
-            self.assertEqual(refreshed, {})
-            self.assertEqual(client.fetched_urls, [])
+    def test_weekday_to_bucket_mapping(self) -> None:
+        # Tue=1, Thu=3, Sat=5 are the scheduled days.
+        self.assertEqual(weekday_to_bucket(1), 0)
+        self.assertEqual(weekday_to_bucket(3), 1)
+        self.assertEqual(weekday_to_bucket(5), 2)
+        # Off-schedule (manual dispatch) falls back to bucket 0.
+        for off in (0, 2, 4, 6):
+            self.assertEqual(weekday_to_bucket(off), 0)
 
+
+class PoliteHttpClientTest(unittest.TestCase):
+    def test_user_agent_pool_has_multiple_entries(self) -> None:
+        # Pattern-detection avoidance relies on the pool being non-trivial.
+        self.assertGreaterEqual(len(USER_AGENT_POOL), 4)
+
+
+class WriteOutputsTest(unittest.TestCase):
     def test_write_outputs_merges_with_existing_canonical_by_case_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
@@ -499,7 +423,6 @@ class CheckeeScraperTest(unittest.TestCase):
                 output_dir,
                 start_date=date(2025, 7, 1),
                 end_date=date(2025, 9, 30),
-                merge_with_canonical=True,
             )
 
             merged = json.loads((output_dir / "checkee_cases.json").read_text(encoding="utf-8"))
@@ -514,7 +437,6 @@ class CheckeeScraperTest(unittest.TestCase):
             summary = json.loads((output_dir / "crawl_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["case_count"], 3)
             self.assertEqual(summary["start_date"], "2025-07-01")
-            # End-date must extend to cover observed complete_date.
             self.assertGreaterEqual(summary["end_date"], "2025-09-30")
 
 

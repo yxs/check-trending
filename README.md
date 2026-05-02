@@ -47,42 +47,55 @@ npm run dev
 
 ## 数据更新流程
 
-### 主路径：`Daily Data Refresh`（CI 自动）
+数据流分两条互不依赖的路径：CI 自动跑的 daily refresh，和本地手动跑的 monthly calibration。两条都只动 detail 页 / 月度 listing 这一类公开数据，不抓任何敏感信息。
 
-- 调度：每天 03:00 北京时间（cron `0 19 * * *`）。
-- 模式：`--source detail-range`，扫描 case_number 区间 `[842700, max_known + probe_count]`。
-- 行为：
-  - **Frontier probe**（`case_number > max_known`）：上探 `probe_count`（默认 40）个号段，发现新 case。Checkee 的 case_number 严格自增，新 case 必落在这段。
-  - **Pending refresh**：cache 命中且 status ∈ {`Clear`, `Reject`} 的 case 跳过；否则 force-fetch detail，捕捉 Pending → Clear 的状态翻转、Note 增删。
-  - **Merge**：本轮 records 按 `case_number` merge 进 `data/checkee/checkee_cases.json`，不会因为 fetch 失败把已收录的 case 从 canonical 丢出去。
-- 不依赖 Cloudflare：detail 页 (`personal_detail.php`) 未启用 challenge，纯 `urllib`，无需 patchright / xvfb / chromium。CI 跑 ~6 min 完成。
+### Path 1：Daily Refresh（CI 自动）
 
-### 次要路径：月度对账（本地手动跑）
+`.github/workflows/daily-data-refresh.yml`
 
-`main.php?dispdate=YYYY-MM` 月度页面被 Cloudflare managed JS challenge 保护，GitHub Actions 的 datacenter IP 上无法稳定通过（实测 patchright + xvfb + bundled stealth chromium 都被拦）。所以这条路径**只在本地（residential IP）手动跑**，需要时执行：
+- **调度**：每周二、四、六 02:37 北京时间（cron `37 18 * * 1,3,5`）+ 入口随机延迟 0-30 min。
+- **跳过逻辑**：如果 `crawl_summary.json` 显示数据 < 36 小时，scheduled 触发会自动 skip（手动 dispatch 不受影响）。
+- **抓取范围**：完全只抓 `personal_detail.php`，**不碰 main.php**（无 Cloudflare 接触面）。每次 run 做两件事：
+  - **Pending bucket refresh**：把 canonical 里所有 non-terminal case 按 `case_number % 3` 分成 3 组，每个调度日刷一组（Tue→bucket 0，Thu→bucket 1，Sat→bucket 2）。每个 Pending case 一周被刷一次。
+  - **Frontier probe**：`max_known+1` 起向上探 `probe_count`（默认 80）个号段，发现新提交的 case。case_number 严格自增，所以新 case 必落在这段。
+- **politeness**：UA 池轮换、3-7s delay + jitter、每 25 fetch 一次 15-45s 长停、shuffle 顺序、连续 5 次 fetch 失败触发 circuit breaker。
+- **失败处理**：fetch 失败**不会** silent fallback to cache（这是过去 bug 的根源）——失败计入 `failures`，单 run failure_rate > 20% 直接退出非零。circuit breaker 触发也是非零退出。
+- **观测**：每次 run 写 `data/checkee/last_run_summary.json`，并 surface 到 GitHub Actions step summary（attempts / successes / failures / new cases / pending status changes）。
+
+### Path 2：Monthly Calibration（本地手动跑）
+
+`scripts/calibrate.sh`
+
+`main.php?dispdate=YYYY-MM` 被 Cloudflare managed JS challenge 保护——detail 页面**没有** JS challenge，但月度 listing 有。所以校准只在本地用 patchright + headed Chrome 跑。当你想确认 canonical 数据没有遗漏时执行：
 
 ```bash
-pip install patchright
-patchright install chromium --no-shell
-python -m check_trending.checkee_scraper \
-  --mode reconcile \
-  --start-date 2025-07-01 \
-  --end-date "$(date -u +%F)" \
-  --monthly-fetcher browser \
-  --probe-count 40
+bash scripts/calibrate.sh
 ```
 
-会更新 `data/checkee/monthly_case_ids.json` manifest、写一份 `data/checkee/reports/reconciliation/YYYY-MM.json` 对账报告，并把 `brute_force_only`（detail 页存在但月度页面没列出）的 case 自动 merge 进 canonical。频率建议 1 个月 1 次。
+会做：
+
+1. 启动 headed Chrome（你能看见 Cloudflare 解开）。
+2. 决定要抓哪些月份：
+   - 当月、上月：永远抓（hard rule，不依赖今天几号）。
+   - 更早的月份：仅当 `monthly_calibration_log.json` 里没记录过时抓。
+3. 抓回的每月 listing 解析后更新 `monthly_case_ids.json`，并把这次校准日期写进 `monthly_calibration_log.json`。
+4. diff 月度 listing vs canonical：listing 里有但 canonical 没有的 case，用 urllib 抓 detail 补进 canonical。
+5. 写一份 `data/checkee/reports/reconciliation/YYYY-MM-DD.json` 报告（per-run 归档，便于审计历史）。
+
+不刷新已有 Pending 的状态——那是 Path 1 的职责。Path 2 只负责 case ID 的发现与对账。
 
 ### 数据文件组织
 
-- `data/checkee/checkee_cases.json` — 所有 case 的 canonical 数据，前端构建源。每天 daily 主路径更新。
-- `data/checkee/monthly_case_ids.json` — 每月的 case ID manifest（来自 `main.php` 月度页解析）。仅在本地手动跑次要路径时刷新。
-- `data/checkee/raw/details/*.html` — detail 页面缓存，已 trim 到详情表格片段。
-- `data/checkee/reports/reconciliation/YYYY-MM.json` — 月度对账报告归档（仅在跑次要路径时生成）。
-- `data/checkee/crawl_summary.json` — canonical 数据集 summary，被 `scripts/build_web_data.py` 校验。
+- `data/checkee/checkee_cases.json` — canonical 数据集，前端构建源。Path 1 与 Path 2 都会写。
+- `data/checkee/monthly_case_ids.json` — 每月的 case ID manifest（来自 `main.php` 解析）。仅 Path 2 写。
+- `data/checkee/monthly_calibration_log.json` — `{month: 上次校准日期}`。仅 Path 2 写。
+- `data/checkee/raw/details/*.html` — detail 页缓存，已 trim 到详情表格片段。
+- `data/checkee/reports/reconciliation/YYYY-MM-DD.json` — 校准报告归档（仅 Path 2 生成）。
+- `data/checkee/crawl_summary.json` — canonical 数据集元信息，被 `scripts/build_web_data.py` 校验。
+- `data/checkee/last_run_summary.json` — 最近一次 scrape run 的运行统计。
 
 ### 自动提交
 
-- 主路径在数据有变化时自动 `commit` + `push` 到 `main`。
-- 主路径支持 `workflow_dispatch` 手动触发，可覆盖 `end_date`、`probe_count`。
+- Path 1 在数据有变化时自动 `commit` + `push` 到 `main`。
+- Path 1 支持 `workflow_dispatch` 手动触发，可覆盖 `bucket`、`probe_count`、`end_date`。
+- Path 2 完成后**不**自动 commit——你 review `git status` 满意了再自己提交。
