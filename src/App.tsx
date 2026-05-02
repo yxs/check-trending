@@ -240,7 +240,7 @@ export default function App() {
         <div className="freshness">
           <span>数据范围</span>
           <strong>{data.summary.start_date} 至 {data.summary.end_date}</strong>
-          <span>生成时间：{data.summary.generated_at}</span>
+          <span>更新于 {formatGeneratedAt(data.summary.generated_at)}</span>
         </div>
       </header>
 
@@ -855,6 +855,23 @@ function pickSpacedAxisLabels(labels: AxisLabel[], minSpacingPx: number): AxisLa
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function formatGeneratedAt(iso: string): string {
+  if (!iso) {
+    return '';
+  }
+  const hasExplicitZone = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso);
+  const date = new Date(hasExplicitZone ? iso : `${iso}Z`);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mn = String(date.getMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mn}`;
 }
 
 function computeVisibleYear(
