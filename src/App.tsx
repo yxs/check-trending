@@ -75,6 +75,7 @@ export default function App() {
   );
   const [data, setData] = useState<WebData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pageviewsTotal, setPageviewsTotal] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(initialViewState.filters);
   const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(initialViewState.lowTideThreshold);
   const [mobileFiltersExpanded, setMobileFiltersExpanded] = useState(false);
@@ -103,6 +104,21 @@ export default function App() {
       .catch((caught: unknown) => {
         setError(caught instanceof Error ? caught.message : '加载数据失败');
       });
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('https://song.goatcounter.com/counter/TOTAL.json', { signal: controller.signal })
+      .then((response) => (response.ok ? (response.json() as Promise<{ count?: string }>) : null))
+      .then((payload) => {
+        if (payload && typeof payload.count === 'string') {
+          setPageviewsTotal(payload.count);
+        }
+      })
+      .catch(() => {
+        // Silent: adblocker / network failure shouldn't surface to user.
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -367,6 +383,11 @@ export default function App() {
           <a href="https://www.checkee.info/" target="_blank" rel="noreferrer">公开样本登记：Checkee.info</a>
           <a href="https://ceacmonitor.com/" target="_blank" rel="noreferrer">个人进度跟踪：CEAC Monitor</a>
         </div>
+        {pageviewsTotal && parseInt(pageviewsTotal.replace(/,/g, ''), 10) > 0 && (
+          <p className="pageview-counter">
+            累计访问 <strong>{pageviewsTotal}</strong> 次
+          </p>
+        )}
       </footer>
     </main>
   );
@@ -557,6 +578,8 @@ function ClearWaveChart({
   const [visibleYear, setVisibleYear] = useState<string>(
     () => series[series.length - 1]?.date.slice(0, 4) ?? '',
   );
+  const [chartWrapHeight, setChartWrapHeight] = useState(0);
+  const [wrapTopOffset, setWrapTopOffset] = useState(0);
 
   const normalizedDayWidth = clamp(dayWidth, 3, 30);
 
@@ -570,6 +593,26 @@ function ClearWaveChart({
     }
     setVisibleYear(computeVisibleYear(wrap, normalizedDayWidth, series));
   }, [normalizedDayWidth, series, stickToRight]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      setChartWrapHeight(entry.contentRect.height);
+      const style = window.getComputedStyle(wrap);
+      setWrapTopOffset(
+        (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0),
+      );
+    });
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
 
   if (series.length === 0) {
     return <p className="muted">当前筛选条件下没有 Clear 数据。</p>;
@@ -602,10 +645,28 @@ function ClearWaveChart({
     x: xForHistoryIndex(index),
   }));
   const axisLabels = pickSpacedAxisLabels(axisLabelCandidates, minLabelSpacingPx);
+  const yAxisRatios = [0, 0.25, 0.5, 0.75, 1];
+  const yAxisScale = chartWrapHeight > 0 ? chartWrapHeight / height : 0;
+  const yAxisLabels = yAxisScale > 0
+    ? yAxisRatios.map((ratio) => ({
+        ratio,
+        top: wrapTopOffset + (padding.top + plotHeight - ratio * plotHeight) * yAxisScale,
+        value: Math.round(maxCount * ratio),
+      }))
+    : [];
 
   return (
     <div className="chart-shell">
       <div className="year-indicator" aria-live="polite">{visibleYear}</div>
+      {yAxisLabels.length > 0 && (
+        <div className="y-axis-floating" aria-hidden="true">
+          {yAxisLabels.map(({ ratio, top, value }) => (
+            <span key={ratio} className="y-axis-floating-label" style={{ top: `${top}px` }}>
+              {value}
+            </span>
+          ))}
+        </div>
+      )}
       <div
         className="chart-wrap"
         ref={wrapRef}
@@ -622,13 +683,17 @@ function ClearWaveChart({
         <svg className="chart" width={svgWidth} viewBox={`0 0 ${svgWidth} ${height}`} role="img" aria-label="每日 Clear 趋势图">
         <line x1={padding.left} y1={padding.top + plotHeight} x2={padding.left + plotWidth} y2={padding.top + plotHeight} />
         <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} />
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        {yAxisRatios.map((ratio) => {
           const y = padding.top + plotHeight - ratio * plotHeight;
           return (
-            <g key={ratio}>
-              <line className="grid-line" x1={padding.left} y1={y} x2={padding.left + plotWidth} y2={y} />
-              <text x={12} y={y + 4}>{Math.round(maxCount * ratio)}</text>
-            </g>
+            <line
+              key={ratio}
+              className="grid-line"
+              x1={padding.left}
+              y1={y}
+              x2={padding.left + plotWidth}
+              y2={y}
+            />
           );
         })}
         {series.map((point, index) => {
