@@ -24,6 +24,11 @@
   --chip-text: #35415a;
   --skeleton-base: #e8edf8;
   --skeleton-glow: #f7f9ff;
+  --chart-bar: #93c5fd;
+  --chart-bar-hover: #60a5fa;
+  --chart-bar-selected: #1e40af;
+  --chart-bar-note: #2563eb;
+  --chart-avg-line: #ea580c;
   color: var(--text-primary);
   background: var(--bg-page);
 }
@@ -53,6 +58,11 @@
   --chip-text: #d3ddf5;
   --skeleton-base: #2a3654;
   --skeleton-glow: #3a4c73;
+  --chart-bar: #3b4d7d;
+  --chart-bar-hover: #6388c8;
+  --chart-bar-selected: #b9cbff;
+  --chart-bar-note: #6f9dff;
+  --chart-avg-line: #fb923c;
 }
 
 * {
@@ -437,24 +447,30 @@ h2 {
 }
 
 .bar {
-  fill: #93c5fd;
+  fill: var(--chart-bar);
   cursor: pointer;
+  transition: fill 140ms ease;
 }
 
-.bar:hover,
+.bar:hover {
+  fill: var(--chart-bar-hover);
+}
+
 .bar.selected {
-  fill: #2563eb;
+  fill: var(--chart-bar-selected);
 }
 
 .bar-note {
-  fill: #1d4ed8;
+  fill: var(--chart-bar-note);
   cursor: pointer;
+  transition: fill 140ms ease;
 }
 
 .avg-line {
   fill: none;
-  stroke: #ea580c;
-  stroke-width: 2.5;
+  stroke: var(--chart-avg-line);
+  stroke-width: 2;
+  stroke-linejoin: round;
 }
 
 .date-label {
