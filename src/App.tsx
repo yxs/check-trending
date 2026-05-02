@@ -50,7 +50,7 @@ const LOW_TIDE_THRESHOLD_MAP: Record<string, LowTideThreshold> = {
   '2': 2,
   '5': 5,
 };
-const CHART_PADDING = { top: 24, right: 24, bottom: 42, left: 48 } as const;
+const CHART_PADDING = { top: 24, right: 56, bottom: 42, left: 48 } as const;
 const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label: string }>> = {
   all: [{ value: 'all', label: '全部类型' }],
   b: [{ value: 'all', label: 'B1 + B2' }],
