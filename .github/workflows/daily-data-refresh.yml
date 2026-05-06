@@ -40,6 +40,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install scraper dependencies
+        run: |
+          # curl_cffi gives the daily scraper a real Chrome TLS/HTTP2
+          # fingerprint. Without it, GitHub Actions' Azure egress IPs +
+          # Python's urllib fingerprint trip Cloudflare bot management
+          # and every detail-page fetch returns 403.
+          pip install --disable-pip-version-check 'curl_cffi>=0.7'
+
       - name: Resolve parameters
         id: params
         run: |

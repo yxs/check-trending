@@ -13,7 +13,7 @@ Path 2 — Manual Calibration (`calibrate` subcommand, runs locally):
     * Decide which months to fetch (current + previous always; earlier months
       only if not previously calibrated, per `monthly_calibration_log.json`).
     * Fetch listings → update `monthly_case_ids.json`.
-    * Diff vs canonical → fetch any missed detail pages via urllib.
+    * Diff vs canonical → fetch any missed detail pages via PoliteHttpClient.
     * Write reconciliation report.
 
 Detail pages have NO Cloudflare challenge (verified empirically), but they are
@@ -27,8 +27,6 @@ import random
 import re
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from html import unescape
@@ -44,20 +42,22 @@ from zoneinfo import ZoneInfo
 
 BASE_URL = "https://www.checkee.info"
 
-# Real browser UA strings; rotated per request to weaken pattern-detection.
-USER_AGENT_POOL: tuple[str, ...] = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+# curl_cffi impersonation targets — rotate per session, not per request, so the
+# TLS/JA3/JA4 fingerprint stays consistent within a session (mismatched JA3 +
+# UA looks more bot-like than either alone). Each entry is a curl_cffi
+# `impersonate` profile that shapes TLS extensions, HTTP/2 SETTINGS, and the
+# default header order to match a real browser build.
+IMPERSONATE_POOL: tuple[str, ...] = (
+    "chrome124",
+    "chrome123",
+    "chrome120",
+    "safari17_0",
+    "edge101",
 )
+
+# Kept only because tests assert pool size; UA is now driven by curl_cffi's
+# impersonation profile, not by manual rotation.
+USER_AGENT_POOL: tuple[str, ...] = IMPERSONATE_POOL
 
 DETAIL_KEYS = frozenset({
     "Check Date", "Checkee CaseNum", "Complete Date", "Country", "Degree",
@@ -459,11 +459,18 @@ def determine_calibration_targets(
 # =============================================================================
 
 class PoliteHttpClient:
-    """Polite urllib client with UA rotation, jitter, long pauses, and a
-    consecutive-failure circuit breaker.
+    """Polite HTTP client with browser TLS impersonation (via curl_cffi),
+    jitter, long pauses, and a consecutive-failure circuit breaker.
+
+    Cloudflare bot management on checkee.info combines IP reputation with
+    JA3/JA4 TLS fingerprinting and HTTP/2 SETTINGS comparison. Plain urllib
+    presents a Python TLS fingerprint that, when combined with the Azure
+    egress IPs that GitHub-hosted runners use, scores high enough to get a
+    blanket 403. curl_cffi impersonates a real Chrome/Safari TLS handshake,
+    which clears the fingerprint signal and lets the request through.
 
     The defaults are sized for ≤ 0.2 req/s sustained — well below the
-    empirically-measured throttle threshold.
+    empirically-measured behavioral throttle threshold.
     """
 
     def __init__(
@@ -476,7 +483,7 @@ class PoliteHttpClient:
         long_pause_min: float = 15.0,
         long_pause_max: float = 45.0,
         consecutive_failure_limit: int = 5,
-        user_agents: Iterable[str] = USER_AGENT_POOL,
+        impersonate_profiles: Iterable[str] = IMPERSONATE_POOL,
     ) -> None:
         self.delay_seconds = delay_seconds
         self.jitter_seconds = jitter_seconds
@@ -486,31 +493,60 @@ class PoliteHttpClient:
         self.long_pause_min = long_pause_min
         self.long_pause_max = long_pause_max
         self.consecutive_failure_limit = consecutive_failure_limit
-        self._user_agents = tuple(user_agents)
+        self._impersonate_profiles = tuple(impersonate_profiles)
         self._fetch_count = 0
         self._consecutive_failures = 0
+        self._session: Any = None
+        self._session_impersonate: str = ""
+
+    def _ensure_session(self) -> None:
+        if self._session is not None:
+            return
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError as error:
+            raise RuntimeError(
+                "curl_cffi is required for the daily scraper; install with "
+                "`pip install curl_cffi`"
+            ) from error
+        # Pick one profile per session so JA3/JA4 stays consistent across
+        # the run — mid-session fingerprint flips are themselves a tell.
+        profile = (
+            random.choice(self._impersonate_profiles)
+            if self._impersonate_profiles
+            else "chrome124"
+        )
+        self._session = cffi_requests.Session(impersonate=profile)
+        self._session_impersonate = profile
+        print(f"http_session impersonate={profile}", flush=True)
 
     def fetch(self, url: str) -> str:
         self._fetch_count += 1
         if self._fetch_count > 1 and (self._fetch_count - 1) % self.long_pause_every == 0:
             self._long_pause()
 
-        ua = random.choice(self._user_agents) if self._user_agents else ""
+        self._ensure_session()
         last_error: Exception | None = None
         for attempt in range(1, self.retries + 1):
             self._sleep(attempt)
             try:
-                request = urllib.request.Request(
-                    url, headers={"User-Agent": ua} if ua else {}
-                )
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                response = self._session.get(url, timeout=self.timeout)
+                if response.status_code == 200:
                     self._consecutive_failures = 0
-                    return response.read().decode("utf-8", "ignore")
-            except (TimeoutError, urllib.error.URLError, urllib.error.HTTPError) as error:
-                last_error = error
-                code = getattr(error, "code", "-")
+                    return response.text
+                last_error = FetchError(
+                    f"HTTP {response.status_code} for {url}"
+                )
                 print(
-                    f"fetch failed attempt={attempt} url={url} status={code} error={error}",
+                    f"fetch failed attempt={attempt} url={url} "
+                    f"status={response.status_code} impersonate={self._session_impersonate}",
+                    flush=True,
+                )
+            except Exception as error:  # noqa: BLE001 — curl_cffi raises a wide tree
+                last_error = error
+                print(
+                    f"fetch failed attempt={attempt} url={url} status=- "
+                    f"error={type(error).__name__}: {error}",
                     flush=True,
                 )
 
@@ -821,7 +857,7 @@ def crawl_calibrate(
     save_monthly_manifest(output_dir, manifest)
     save_calibration_log(output_dir, log)
 
-    # ---- Diff vs canonical → fetch missing details (urllib) ----
+    # ---- Diff vs canonical → fetch missing details (PoliteHttpClient) ----
     listing_ids: set[str] = set()
     listing_records: dict[str, CaseRecord] = {}
     for cases in listings_collected.values():
