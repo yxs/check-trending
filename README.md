@@ -47,20 +47,24 @@ npm run dev
 
 ## 数据更新流程
 
-数据流分两条互不依赖的路径：CI 自动跑的 daily refresh，和本地手动跑的 monthly calibration。两条都只动 detail 页 / 月度 listing 这一类公开数据，不抓任何敏感信息。
+数据流分两条互不依赖的路径：本地 launchd cron 跑的 daily refresh，和本地手动跑的 monthly calibration。两条都只动 detail 页 / 月度 listing 这一类公开数据，不抓任何敏感信息。
 
-### Path 1：Daily Refresh（CI 自动）
+### Path 1：Daily Refresh（本地 launchd cron）
 
-`.github/workflows/daily-data-refresh.yml`
+`scripts/local_daily_refresh.sh` + `scripts/install_local_refresh_cron.sh`
 
-- **调度**：每周二、四、六 02:37 北京时间（cron `37 18 * * 1,3,5`）+ 入口随机延迟 0-30 min。
-- **跳过逻辑**：如果 `crawl_summary.json` 显示数据 < 36 小时，scheduled 触发会自动 skip（手动 dispatch 不受影响）。
+之前这条路径跑在 GitHub Actions 上。2026-05-06 起 Cloudflare 把 Azure datacenter IP 段整段 403 了（curl_cffi Chrome 指纹也救不回来），所以迁到本机 launchd，从家庭 IP 出口。
+
+- **安装**：`bash scripts/install_local_refresh_cron.sh`，在 `~/Library/Application Support/checkee-cron` 建独立 checkout + venv，写 launchd plist 到 `~/Library/LaunchAgents/com.user.checkee-daily-refresh.plist`。幂等。
+- **调度**：每周一、三、五 13:37 本地时间。
+- **跳过逻辑**：如果 `crawl_summary.json` 显示数据 < 36 小时，自动 skip。
 - **抓取范围**：完全只抓 `personal_detail.php`，**不碰 main.php**（无 Cloudflare 接触面）。每次 run 做两件事：
-  - **Pending bucket refresh**：把 canonical 里所有 non-terminal case 按 `case_number % 3` 分成 3 组，每个调度日刷一组（Tue→bucket 0，Thu→bucket 1，Sat→bucket 2）。每个 Pending case 一周被刷一次。
+  - **Pending bucket refresh**：把 canonical 里所有 non-terminal case 按 `case_number % 3` 分成 3 组，每个调度日刷一组（Mon→bucket 0，Wed→bucket 1，Fri→bucket 2）。每个 Pending case 一周被刷一次。
   - **Frontier probe**：`max_known+1` 起向上探 `probe_count`（默认 80）个号段，发现新提交的 case。case_number 严格自增，所以新 case 必落在这段。
-- **politeness**：UA 池轮换、3-7s delay + jitter、每 25 fetch 一次 15-45s 长停、shuffle 顺序、连续 5 次 fetch 失败触发 circuit breaker。
-- **失败处理**：fetch 失败**不会** silent fallback to cache（这是过去 bug 的根源）——失败计入 `failures`，单 run failure_rate > 20% 直接退出非零。circuit breaker 触发也是非零退出。
-- **观测**：每次 run 写 `data/checkee/last_run_summary.json`，并 surface 到 GitHub Actions step summary（attempts / successes / failures / new cases / pending status changes）。
+- **politeness**：UA 池轮换、1.5-3.5s delay + jitter、每 25 fetch 一次 15-45s 长停、shuffle 顺序、连续 5 次 fetch 失败触发 circuit breaker。
+- **失败处理**：fetch 失败**不会** silent fallback to cache（这是过去 bug 的根源）——失败计入 `failures`，单 run failure_rate > 20% 直接退出非零。circuit breaker 触发也是非零退出。瞬时 DNS / 网络错误内置 3 次 retry。
+- **观测**：每次 run append 到 `~/Library/Logs/checkee/refresh.log`；同时写 `data/checkee/last_run_summary.json`（attempts / successes / failures / new cases / pending status changes）。
+- **手动触发**：`launchctl start com.user.checkee-daily-refresh && tail -f ~/Library/Logs/checkee/refresh.log`。
 
 ### Path 2：Monthly Calibration（本地手动跑）
 
@@ -96,6 +100,5 @@ bash scripts/calibrate.sh
 
 ### 自动提交
 
-- Path 1 在数据有变化时自动 `commit` + `push` 到 `main`。
-- Path 1 支持 `workflow_dispatch` 手动触发，可覆盖 `bucket`、`probe_count`、`end_date`。
+- Path 1 在数据有变化时自动 `commit` + `push` 到 `main`（commit 作者：`checkee-local-cron`）。push 被拒绝时会 rebase + 重试一次。
 - Path 2 完成后**不**自动 commit——你 review `git status` 满意了再自己提交。
