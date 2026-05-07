@@ -94,9 +94,9 @@ echo "scraper start end_date=$END_DATE"
   --bucket auto \
   --probe-count 80 \
   --fetch-budget 1000 \
-  --delay-seconds 3 \
-  --jitter-seconds 4 \
-  --retries 1 \
+  --delay-seconds 1.5 \
+  --jitter-seconds 2 \
+  --retries 3 \
   --timeout 30 \
   --max-failure-rate 0.20
 
