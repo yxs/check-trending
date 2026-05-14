@@ -13,7 +13,7 @@ type ViewState = {
   lowTideThreshold: LowTideThreshold;
 };
 
-const CHECK_DEPTH_VALUES: CheckDepth[] = ['all', 'gte7', 'gte30', 'gte60', 'gte90'];
+const CHECK_DEPTH_VALUES: CheckDepth[] = ['all', 'gte7', 'gte30', 'gte60', 'gte90', 'gte180', 'gte270'];
 const NOTE_COHORT_VALUES: NoteCohort[] = ['all', 'withNote', 'withoutNote'];
 const VISA_GROUP_VALUES: VisaGroup[] = ['all', 'b', 'work', 'student', 'other'];
 const LOW_TIDE_VALUES: LowTideThreshold[] = [1, 2, 5];
