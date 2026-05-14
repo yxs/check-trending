@@ -16,7 +16,7 @@ export interface CaseRecord {
 
 export type VisaGroup = 'all' | 'b' | 'work' | 'student' | 'other';
 export type VisaSubtype = 'all' | 'h' | 'l' | 'o' | 'f' | 'j';
-export type CheckDepth = 'all' | 'gte7' | 'gte30' | 'gte60' | 'gte90';
+export type CheckDepth = 'all' | 'gte7' | 'gte30' | 'gte60' | 'gte90' | 'gte180' | 'gte270';
 export type CheckDepthBucket = 'lt7' | Exclude<CheckDepth, 'all'>;
 export type NoteCohort = 'all' | 'withNote' | 'withoutNote';
 export type RegionFilter = 'all' | 'mainland' | 'overseas' | (string & {});
@@ -57,6 +57,43 @@ export interface CurrentStatus {
   clears7d: number;
   clears14d: number;
   clears30d: number;
+}
+
+export interface WaitScatterPoint {
+  date: string;
+  waitingDays: number;
+  caseNumber: string;
+  visaGroup: Exclude<VisaGroup, 'all'>;
+  hasNote: boolean;
+  detailUrl: string;
+  consulate: string;
+}
+
+export interface LongCheckShareDailyPoint {
+  date: string;
+  total: number;
+  counts: Record<number, number>;
+}
+
+export interface LongCheckShareSmoothed {
+  date: string;
+  total: number;
+  shares: Record<number, number>;
+}
+
+export interface PendingBacklog {
+  threshold: number;
+  count: number;
+}
+
+export interface WaitDistributionByMonth {
+  month: string;
+  count: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  max: number;
 }
 
 export interface WebDataSummary {
