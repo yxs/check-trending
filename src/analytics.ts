@@ -5,16 +5,12 @@ import type {
   CurrentStatus,
   DailyClearPoint,
   Filters,
-  LongCheckShareDailyPoint,
-  LongCheckShareSmoothed,
   LowTideRun,
   MovingAveragePoint,
   PendingBacklog,
   RegionFilter,
   VisaSubtype,
   VisaGroup,
-  WaitDistributionByMonth,
-  WaitScatterPoint,
 } from './types';
 
 export const LONG_CHECK_THRESHOLDS = [90, 180, 270] as const;
@@ -262,144 +258,6 @@ function getDateCutoff(newestDate: string, timeRangeDays: Filters['timeRangeDays
   return newest.toISOString().slice(0, 10);
 }
 
-export function buildWaitScatterPoints(records: CaseRecord[]): WaitScatterPoint[] {
-  const points: WaitScatterPoint[] = [];
-  for (const record of records) {
-    if (record.status !== 'Clear' || !record.complete_date) {
-      continue;
-    }
-    if (record.waiting_days === null || record.waiting_days === undefined) {
-      continue;
-    }
-    points.push({
-      date: record.complete_date,
-      waitingDays: record.waiting_days,
-      caseNumber: record.case_number,
-      visaGroup: getVisaGroup(record.visa_type),
-      hasNote: hasNote(record),
-      detailUrl: record.detail_url,
-      consulate: record.consulate,
-    });
-  }
-  return points.sort((left, right) => {
-    if (left.date !== right.date) {
-      return left.date.localeCompare(right.date);
-    }
-    return left.waitingDays - right.waitingDays;
-  });
-}
-
-export function buildLongCheckShareSeries(
-  records: CaseRecord[],
-  thresholds: readonly number[] = LONG_CHECK_THRESHOLDS,
-  windowDays = 14,
-): { daily: LongCheckShareDailyPoint[]; smoothed: LongCheckShareSmoothed[] } {
-  const dailyMap = new Map<string, LongCheckShareDailyPoint>();
-  const zeroCounts = (): Record<number, number> =>
-    thresholds.reduce<Record<number, number>>((acc, threshold) => {
-      acc[threshold] = 0;
-      return acc;
-    }, {});
-  for (const record of records) {
-    if (record.status !== 'Clear' || !record.complete_date) {
-      continue;
-    }
-    const existing = dailyMap.get(record.complete_date) ?? {
-      date: record.complete_date,
-      total: 0,
-      counts: zeroCounts(),
-    };
-    existing.total += 1;
-    const wait = record.waiting_days ?? 0;
-    for (const threshold of thresholds) {
-      if (wait >= threshold) {
-        existing.counts[threshold] += 1;
-      }
-    }
-    dailyMap.set(record.complete_date, existing);
-  }
-  const dates = [...dailyMap.keys()].sort();
-  if (dates.length === 0) {
-    return { daily: [], smoothed: [] };
-  }
-  const daily = buildDateRange(dates[0], dates[dates.length - 1]).map((date) =>
-    dailyMap.get(date) ?? { date, total: 0, counts: zeroCounts() },
-  );
-  const smoothed: LongCheckShareSmoothed[] = daily.map((_, index) => {
-    const start = Math.max(0, index - windowDays + 1);
-    const window = daily.slice(start, index + 1);
-    const total = window.reduce((sum, point) => sum + point.total, 0);
-    const shares: Record<number, number> = {};
-    for (const threshold of thresholds) {
-      const cumulative = window.reduce((sum, point) => sum + point.counts[threshold], 0);
-      shares[threshold] = total > 0 ? cumulative / total : 0;
-    }
-    return {
-      date: daily[index].date,
-      total,
-      shares,
-    };
-  });
-  return { daily, smoothed };
-}
-
-export function buildPendingBacklog(
-  records: CaseRecord[],
-  thresholds: readonly number[] = LONG_CHECK_THRESHOLDS,
-): PendingBacklog[] {
-  return thresholds.map((threshold) => {
-    let count = 0;
-    for (const record of records) {
-      if (record.status !== 'Pending') {
-        continue;
-      }
-      const wait = record.waiting_days ?? 0;
-      if (wait >= threshold) {
-        count += 1;
-      }
-    }
-    return { threshold, count };
-  });
-}
-
-export function buildWaitDistributionByMonth(records: CaseRecord[]): WaitDistributionByMonth[] {
-  const byMonth = new Map<string, number[]>();
-  for (const record of records) {
-    if (record.status !== 'Clear' || !record.complete_date) {
-      continue;
-    }
-    if (record.waiting_days === null || record.waiting_days === undefined) {
-      continue;
-    }
-    const month = record.complete_date.slice(0, 7);
-    const bucket = byMonth.get(month) ?? [];
-    bucket.push(record.waiting_days);
-    byMonth.set(month, bucket);
-  }
-  return [...byMonth.entries()]
-    .map(([month, values]) => {
-      const sorted = [...values].sort((left, right) => left - right);
-      return {
-        month,
-        count: sorted.length,
-        p25: percentileSorted(sorted, 0.25),
-        p50: percentileSorted(sorted, 0.5),
-        p75: percentileSorted(sorted, 0.75),
-        p90: percentileSorted(sorted, 0.9),
-        max: sorted[sorted.length - 1] ?? 0,
-      };
-    })
-    .sort((left, right) => left.month.localeCompare(right.month));
-}
-
-function percentileSorted(sorted: number[], ratio: number): number {
-  if (sorted.length === 0) {
-    return 0;
-  }
-  const index = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio));
-  return sorted[index];
-}
-
 function buildDateRange(startDate: string, endDate: string): string[] {
   const dates: string[] = [];
   const current = new Date(`${startDate}T00:00:00Z`);
@@ -413,5 +271,25 @@ function buildDateRange(startDate: string, endDate: string): string[] {
 
 function sumLastDays(series: DailyClearPoint[], days: number): number {
   return series.slice(-days).reduce((sum, point) => sum + point.count, 0);
+}
+
+// Snapshot of how many cases are still Pending past each long-check threshold —
+// a breakdown of the "处理中" headline by how long people have already waited.
+export function buildPendingBacklog(
+  records: CaseRecord[],
+  thresholds: readonly number[] = LONG_CHECK_THRESHOLDS,
+): PendingBacklog[] {
+  return thresholds.map((threshold) => {
+    let count = 0;
+    for (const record of records) {
+      if (record.status !== 'Pending') {
+        continue;
+      }
+      if ((record.waiting_days ?? 0) >= threshold) {
+        count += 1;
+      }
+    }
+    return { threshold, count };
+  });
 }
 

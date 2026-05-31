@@ -3,10 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCurrentStatus,
   buildDailyClearSeries,
-  buildLongCheckShareSeries,
   buildPendingBacklog,
-  buildWaitDistributionByMonth,
-  buildWaitScatterPoints,
   filterCases,
   findLowTideRuns,
   getCheckDepth,
@@ -68,7 +65,33 @@ describe('analytics grouping', () => {
     expect(getCheckDepth(makeCase({ waiting_days: 60 }))).toBe('gte60');
     expect(getCheckDepth(makeCase({ waiting_days: 90 }))).toBe('gte90');
     expect(getCheckDepth(makeCase({ waiting_days: 180 }))).toBe('gte180');
-    expect(getCheckDepth(makeCase({ waiting_days: 300 }))).toBe('gte270');
+    expect(getCheckDepth(makeCase({ waiting_days: 270 }))).toBe('gte270');
+  });
+});
+
+describe('pending backlog', () => {
+  it('counts only Pending cases at or beyond each threshold', () => {
+    const cases = [
+      makeCase({ status: 'Pending', waiting_days: 95 }),
+      makeCase({ status: 'Pending', waiting_days: 200 }),
+      makeCase({ status: 'Pending', waiting_days: 300 }),
+      makeCase({ status: 'Pending', waiting_days: 40 }),
+      makeCase({ status: 'Clear', waiting_days: 300 }),
+    ];
+    expect(buildPendingBacklog(cases)).toEqual([
+      { threshold: 90, count: 3 },
+      { threshold: 180, count: 2 },
+      { threshold: 270, count: 1 },
+    ]);
+  });
+
+  it('treats missing waiting_days as zero', () => {
+    const cases = [makeCase({ status: 'Pending', waiting_days: null })];
+    expect(buildPendingBacklog(cases)).toEqual([
+      { threshold: 90, count: 0 },
+      { threshold: 180, count: 0 },
+      { threshold: 270, count: 0 },
+    ]);
   });
 });
 
@@ -176,68 +199,6 @@ describe('filtering and daily clear series', () => {
     const dates = ['2025-12-21', '2025-12-31', '2026-01-01', '2026-01-11', '2026-01-21'];
 
     expect(getDateTickIndexes(dates, 20, 55)).toEqual([0, 4]);
-  });
-
-  it('builds wait scatter points only from clear cases with both dates', () => {
-    const records = [
-      makeCase({ case_number: '1', complete_date: '2026-01-10', waiting_days: 40 }),
-      makeCase({ case_number: '2', complete_date: '2026-01-11', waiting_days: 90 }),
-      makeCase({ case_number: '3', complete_date: null, status: 'Pending', waiting_days: 30 }),
-      makeCase({ case_number: '4', complete_date: '2026-01-10', waiting_days: null as unknown as number }),
-    ];
-    const points = buildWaitScatterPoints(records);
-    expect(points.map((point) => point.caseNumber)).toEqual(['1', '2']);
-    expect(points[0].visaGroup).toBe('work');
-  });
-
-  it('computes long-check rolling share over a smoothing window with custom thresholds', () => {
-    const records = [
-      makeCase({ case_number: 'a', complete_date: '2026-01-01', waiting_days: 30 }),
-      makeCase({ case_number: 'b', complete_date: '2026-01-01', waiting_days: 100 }),
-      makeCase({ case_number: 'c', complete_date: '2026-01-02', waiting_days: 200 }),
-      makeCase({ case_number: 'd', complete_date: '2026-01-03', waiting_days: 30 }),
-    ];
-    const { daily, smoothed } = buildLongCheckShareSeries(records, [90, 180], 3);
-    expect(daily.map((point) => point.total)).toEqual([2, 1, 1]);
-    expect(daily.map((point) => point.counts[90])).toEqual([1, 1, 0]);
-    expect(daily.map((point) => point.counts[180])).toEqual([0, 1, 0]);
-    expect(smoothed[2]).toEqual({
-      date: '2026-01-03',
-      total: 4,
-      shares: { 90: 0.5, 180: 0.25 },
-    });
-  });
-
-  it('counts pending cases at each long-wait threshold', () => {
-    const records = [
-      makeCase({ case_number: '1', status: 'Pending', complete_date: null, waiting_days: 95 }),
-      makeCase({ case_number: '2', status: 'Pending', complete_date: null, waiting_days: 200 }),
-      makeCase({ case_number: '3', status: 'Pending', complete_date: null, waiting_days: 280 }),
-      makeCase({ case_number: '4', status: 'Clear', complete_date: '2026-01-01', waiting_days: 300 }),
-    ];
-    expect(buildPendingBacklog(records, [90, 180, 270])).toEqual([
-      { threshold: 90, count: 3 },
-      { threshold: 180, count: 2 },
-      { threshold: 270, count: 1 },
-    ]);
-  });
-
-  it('summarises wait distribution by clear month', () => {
-    const records = [
-      makeCase({ case_number: '1', complete_date: '2026-01-05', waiting_days: 20 }),
-      makeCase({ case_number: '2', complete_date: '2026-01-15', waiting_days: 40 }),
-      makeCase({ case_number: '3', complete_date: '2026-01-25', waiting_days: 80 }),
-      makeCase({ case_number: '4', complete_date: '2026-02-05', waiting_days: 100 }),
-    ];
-    const distribution = buildWaitDistributionByMonth(records);
-    expect(distribution).toHaveLength(2);
-    expect(distribution[0].month).toBe('2026-01');
-    expect(distribution[0].count).toBe(3);
-    expect(distribution[0].p25).toBe(20);
-    expect(distribution[0].p50).toBe(40);
-    expect(distribution[0].max).toBe(80);
-    expect(distribution[1].month).toBe('2026-02');
-    expect(distribution[1].p50).toBe(100);
   });
 
   it('computes trailing moving averages', () => {

@@ -59,41 +59,9 @@ export interface CurrentStatus {
   clears30d: number;
 }
 
-export interface WaitScatterPoint {
-  date: string;
-  waitingDays: number;
-  caseNumber: string;
-  visaGroup: Exclude<VisaGroup, 'all'>;
-  hasNote: boolean;
-  detailUrl: string;
-  consulate: string;
-}
-
-export interface LongCheckShareDailyPoint {
-  date: string;
-  total: number;
-  counts: Record<number, number>;
-}
-
-export interface LongCheckShareSmoothed {
-  date: string;
-  total: number;
-  shares: Record<number, number>;
-}
-
 export interface PendingBacklog {
   threshold: number;
   count: number;
-}
-
-export interface WaitDistributionByMonth {
-  month: string;
-  count: number;
-  p25: number;
-  p50: number;
-  p75: number;
-  p90: number;
-  max: number;
 }
 
 export interface WebDataSummary {
