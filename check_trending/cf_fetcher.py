@@ -5,10 +5,15 @@ plain HTTP clients (urllib / requests / curl_cffi) cannot solve — it requires
 a real browser fingerprint.
 
 This module wraps `patchright` (a stealth fork of Playwright) and is intended
-for **local manual runs only** (Path 2 — calibration). It defaults to headed
-mode so a human can watch the CF challenge resolve. Detail pages
-(`personal_detail.php`) are NOT JS-challenged and continue to use the plain
-urllib client in `PoliteHttpClient`.
+for **local manual runs only**. It defaults to headed mode so a human can watch
+the CF challenge resolve.
+
+NOTE (2026-05): `personal_detail.php` USED to be challenge-free, but Cloudflare
+now gates it with the same managed JS challenge as `main.php`. So detail pages
+can no longer be fetched with the plain `PoliteHttpClient` (curl_cffi) — they
+must go through a cleared browser session too. The current manual refresh
+(`scripts/refresh_from_browser.py`) fetches both listings and detail pages from
+one browser session where the challenge has been solved once.
 """
 from __future__ import annotations
 

@@ -1,23 +1,28 @@
-"""Checkee.info scraper with two clean paths.
+"""Checkee.info scraper — HTML parsers + two (now-blocked) automated fetch paths.
 
-Path 1 — Daily Refresh (`daily` subcommand, runs in CI):
-  detail-page only (no main.php → no Cloudflare). Each run does:
-    * Frontier probe: scan max_known+1 .. max_known+probe_count to find new
-      case_numbers.
+STATUS (2026-05): Cloudflare put a *managed JS challenge* on BOTH
+`main.php?dispdate=...` AND `personal_detail.php?casenum=...`. Plain HTTP
+clients (urllib / curl_cffi — any TLS-impersonation profile, any residential
+IP) get a 403 "Just a moment" page from both, which kills both automated paths
+below. The only working refresh is now a human-solved browser session; see
+`scripts/refresh_from_browser.py` and the README "数据更新" section. The parsers
+here (`parse_month_page`, `parse_detail_page`) are still the stable, tested
+core that the manual flow reuses.
+
+Path 1 — Daily Refresh (`daily` subcommand) — BLOCKED (detail.php now 403):
+  detail-page only. Each run did:
+    * Frontier probe: scan max_known+1 .. max_known+probe_count for new cases.
     * Pending bucket: refresh canonical Pending where case_number % 3 == today's
-      weekday-derived bucket. With Tue/Thu/Sat schedule, every Pending case is
-      refreshed exactly once per week.
+      weekday-derived bucket (Tue/Thu/Sat → every Pending case once per week).
 
-Path 2 — Manual Calibration (`calibrate` subcommand, runs locally):
-  Headed browser, hits main.php (Cloudflare-gated). Each run does:
+Path 2 — Manual Calibration (`calibrate` subcommand) — PARTIALLY BLOCKED:
+  Headed browser fetches main.php listings (still works), but the follow-up
+  detail fetch via curl_cffi now 403s. Each run did:
     * Decide which months to fetch (current + previous always; earlier months
       only if not previously calibrated, per `monthly_calibration_log.json`).
     * Fetch listings → update `monthly_case_ids.json`.
-    * Diff vs canonical → fetch any missed detail pages via PoliteHttpClient.
+    * Diff vs canonical → fetch missed detail pages.
     * Write reconciliation report.
-
-Detail pages have NO Cloudflare challenge (verified empirically), but they are
-behaviorally rate-limited; ~0.2 req/s sustained is the soft cap. Stay polite.
 """
 from __future__ import annotations
 
