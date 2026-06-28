@@ -131,7 +131,7 @@ export function NotesPage({
           <p className="eyebrow">Case Note 搜索</p>
           <h1>Case Note 全文检索</h1>
           <p className="lede">
-            搜索 2017 年至今所有带 Note 的 Checkee 样本，匹配面经、补料、时间线等关键词。
+            搜索 2017 年至今所有带 Note 的 Checkee 样本。
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a
@@ -180,7 +180,7 @@ export function NotesPage({
               type="search"
               className="note-search-input"
               aria-label="搜索 Case Note 关键词"
-              placeholder="搜关键词，如 行政审查、social media"
+              placeholder="搜关键词，如 行政审查、10043、5535、social media"
               value={query}
               onChange={(event) => handleQuery(event.target.value)}
             />
