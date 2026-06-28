@@ -7,5 +7,15 @@
   },
   "globalHeaders": {
     "X-Content-Type-Options": "nosniff"
-  }
+  },
+  "routes": [
+    {
+      "route": "/assets/*",
+      "headers": { "Cache-Control": "public, max-age=31536000, immutable" }
+    },
+    {
+      "route": "/data/*",
+      "headers": { "Cache-Control": "public, max-age=3600" }
+    }
+  ]
 }

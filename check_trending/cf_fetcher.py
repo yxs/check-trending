@@ -1,20 +1,4 @@
-"""Cloudflare-aware fetcher for main.php monthly listings.
-
-`main.php?dispdate=YYYY-MM` is gated by a Cloudflare managed JS challenge that
-plain HTTP clients (urllib / requests / curl_cffi) cannot solve — it requires
-a real browser fingerprint.
-
-This module wraps `patchright` (a stealth fork of Playwright) and is intended
-for **local manual runs only**. It defaults to headed mode so a human can watch
-the CF challenge resolve.
-
-NOTE (2026-05): `personal_detail.php` USED to be challenge-free, but Cloudflare
-now gates it with the same managed JS challenge as `main.php`. So detail pages
-can no longer be fetched with the plain `PoliteHttpClient` (curl_cffi) — they
-must go through a cleared browser session too. The current manual refresh
-(`scripts/refresh_from_browser.py`) fetches both listings and detail pages from
-one browser session where the challenge has been solved once.
-"""
+"""Cloudflare-aware fetcher for main.php monthly listings."""
 from __future__ import annotations
 
 from typing import Any
@@ -24,15 +8,6 @@ CHALLENGE_TITLE_FRAGMENT = "Just a moment"
 
 
 class BrowserFetcher:
-    """Maintains a single patchright browser session across multiple URL fetches.
-
-    Use as a context manager so the browser is launched once per run and closed
-    cleanly even on failure::
-
-        with BrowserFetcher() as fetcher:
-            html = fetcher.fetch(url)
-    """
-
     def __init__(
         self,
         *,
@@ -98,7 +73,7 @@ class BrowserFetcher:
             page.goto(
                 url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms
             )
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             raise RuntimeError(f"browser navigation failed for {url}: {error}") from error
 
         try:
@@ -106,14 +81,13 @@ class BrowserFetcher:
                 f"!document.title.includes('{CHALLENGE_TITLE_FRAGMENT}')",
                 timeout=self.challenge_wait_ms,
             )
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             title = page.title() or ""
             if CHALLENGE_TITLE_FRAGMENT in title:
                 raise RuntimeError(
                     f"Cloudflare challenge did not resolve within "
                     f"{self.challenge_wait_ms}ms for {url}"
                 ) from error
-            # Title cleared during the small race window — fall through to read content.
 
         return page.content()
 

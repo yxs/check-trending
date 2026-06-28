@@ -273,8 +273,6 @@ function sumLastDays(series: DailyClearPoint[], days: number): number {
   return series.slice(-days).reduce((sum, point) => sum + point.count, 0);
 }
 
-// Snapshot of how many cases are still Pending past each long-check threshold —
-// a breakdown of the "处理中" headline by how long people have already waited.
 export function buildPendingBacklog(
   records: CaseRecord[],
   thresholds: readonly number[] = LONG_CHECK_THRESHOLDS,

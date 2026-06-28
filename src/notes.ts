@@ -1,23 +1,18 @@
-// Client-side full-text search over the historical Note corpus
-// (public/data/notes.json — every checkee case 2017→now that carried a Note).
-// Pure, framework-free helpers so the matching logic stays unit-testable.
 import { getRegionGroup, getVisaGroup } from './analytics';
 import type { VisaGroup } from './types';
 
-// Compact corpus record. Short keys keep the 17k-record payload small; they are
-// expanded to readable accessors here so the rest of the app never juggles them.
 export interface NoteCase {
-  cn: string; // case_number
-  id: string; // display_id
-  vt: string; // visa_type
-  ve: string; // visa_entry
-  co: string; // consulate
-  mj: string; // major
-  st: string; // status
-  cd: string; // check_date
-  cp: string | null; // complete_date
-  wd: number | null; // waiting_days
-  nt: string; // note (raw, newlines preserved)
+  cn: string;
+  id: string;
+  vt: string;
+  ve: string;
+  co: string;
+  mj: string;
+  st: string;
+  cd: string;
+  cp: string | null;
+  wd: number | null;
+  nt: string;
 }
 
 export interface NotesData {
@@ -34,7 +29,7 @@ export type NoteRegion = 'all' | 'mainland' | 'overseas';
 export interface NoteFilters {
   visaGroup: VisaGroup;
   status: NoteStatus;
-  year: string; // 'all' | 'YYYY'
+  year: string;
   region: NoteRegion;
 }
 
@@ -53,11 +48,9 @@ export function noteYear(record: NoteCase): string {
   return record.cd.slice(0, 4);
 }
 
-// Lowercased haystack: the note plus the metadata people actually search by
-// (school/major, consulate, visa, id). Built once per case and reused.
 export function buildSearchBlob(record: NoteCase): string {
   return [record.nt, record.mj, record.co, record.vt, record.ve, record.id, record.st]
-    .join('  ')
+    .join('  ')
     .toLowerCase();
 }
 
@@ -83,22 +76,17 @@ function matchesFilters(record: NoteCase, filters: NoteFilters): boolean {
 
 export interface SearchResult {
   total: number;
-  results: NoteCase[];
+  matches: NoteCase[];
 }
 
-// AND search: a case matches when every whitespace-separated term appears in its
-// blob. `blobs[i]` must correspond to `cases[i]`. Results keep corpus order
-// (already check_date-descending); only the first `limit` are materialized.
 export function searchNotes(
   cases: NoteCase[],
   blobs: string[],
   query: string,
   filters: NoteFilters,
-  limit: number,
 ): SearchResult {
   const terms = parseTerms(query);
-  const results: NoteCase[] = [];
-  let total = 0;
+  const matches: NoteCase[] = [];
   for (let index = 0; index < cases.length; index += 1) {
     const record = cases[index];
     if (!matchesFilters(record, filters)) {
@@ -112,15 +100,11 @@ export function searchNotes(
         break;
       }
     }
-    if (!matched) {
-      continue;
-    }
-    total += 1;
-    if (results.length < limit) {
-      results.push(record);
+    if (matched) {
+      matches.push(record);
     }
   }
-  return { total, results };
+  return { total: matches.length, matches };
 }
 
 export interface HighlightSegment {
@@ -128,8 +112,6 @@ export interface HighlightSegment {
   hit: boolean;
 }
 
-// Split `text` into alternating plain / matched segments for <mark> rendering.
-// Case-insensitive, multi-term; non-overlapping left-to-right.
 export function highlightSegments(text: string, terms: string[]): HighlightSegment[] {
   const cleaned = terms.filter(Boolean);
   if (cleaned.length === 0) {

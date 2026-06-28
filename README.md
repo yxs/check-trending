@@ -4,7 +4,7 @@
 
 <h1 align="center">Check Trending</h1>
 
-<p align="center">观察美国签证 221(g) / Administrative Processing 的出签趋势，并检索历年案例 Note。</p>
+<p align="center">观察美国签证 221(g) / Administrative Processing 的出签趋势，并检索历年 Case Note。</p>
 
 ---
 

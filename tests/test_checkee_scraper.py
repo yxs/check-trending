@@ -87,13 +87,6 @@ DETAIL_HTML = """
 
 
 def _detail_table_fixture() -> str:
-    """Build the detail-table HTML used by extract_detail_table_html.
-
-    The literal table tag is split via concatenation so neither this file nor
-    the scraper module contains the trim sentinel as a single contiguous
-    substring (a guard against blob-callback tools accidentally treating the
-    source as a detail page during history rewrites).
-    """
     table_open = '<' + 'table width="96%" border="1" align="center" cellspacing="0">'
     table_close = '<' + '/table>'
     return f"""
@@ -244,7 +237,6 @@ class CalibrationTargetsTest(unittest.TestCase):
             available_months=["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
             log={},
         )
-        # Empty log → every month needs first calibration; also current+previous.
         self.assertEqual(
             targets,
             ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
@@ -266,7 +258,6 @@ class CalibrationTargetsTest(unittest.TestCase):
             available_months=["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
             log=log,
         )
-        # Always: 2026-04 + 2026-05. Plus 2026-02 (uncalibrated).
         self.assertEqual(targets, ["2026-02", "2026-04", "2026-05"])
 
     def test_january_year_boundary(self) -> None:
@@ -276,8 +267,6 @@ class CalibrationTargetsTest(unittest.TestCase):
             available_months=["2025-11", "2025-12", "2026-01"],
             log=log,
         )
-        # Current=2026-01, previous=2025-12. 2025-11 already calibrated? No,
-        # 2025-11 not in log → also pulled in.
         self.assertEqual(targets, ["2025-11", "2025-12", "2026-01"])
 
 
@@ -294,7 +283,6 @@ class PendingBucketTest(unittest.TestCase):
         self.assertEqual(set(b0) & set(b1), set())
         self.assertEqual(set(b0) & set(b2), set())
         self.assertEqual(set(b1) & set(b2), set())
-        # All buckets within ±1 of len/3.
         self.assertTrue(abs(len(b0) - 10) <= 1)
         self.assertTrue(abs(len(b1) - 10) <= 1)
         self.assertTrue(abs(len(b2) - 10) <= 1)
@@ -306,10 +294,6 @@ class PendingBucketTest(unittest.TestCase):
             {"case_number": "102", "status": "Reject"},
             {"case_number": "103", "status": "Pending"},
         ]
-        # 100 % 3 == 1 → Clear, skip
-        # 101 % 3 == 2 → Pending → bucket 2
-        # 102 % 3 == 0 → Reject, skip
-        # 103 % 3 == 1 → Pending → bucket 1
         self.assertEqual(select_pending_for_bucket(canonical, bucket=2), ["101"])
         self.assertEqual(select_pending_for_bucket(canonical, bucket=1), ["103"])
         self.assertEqual(select_pending_for_bucket(canonical, bucket=0), [])
@@ -327,18 +311,15 @@ class PendingBucketTest(unittest.TestCase):
         self.assertEqual(all_buckets, ["123"])
 
     def test_weekday_to_bucket_mapping(self) -> None:
-        # Tue=1, Thu=3, Sat=5 are the scheduled days.
         self.assertEqual(weekday_to_bucket(1), 0)
         self.assertEqual(weekday_to_bucket(3), 1)
         self.assertEqual(weekday_to_bucket(5), 2)
-        # Off-schedule (manual dispatch) falls back to bucket 0.
         for off in (0, 2, 4, 6):
             self.assertEqual(weekday_to_bucket(off), 0)
 
 
 class PoliteHttpClientTest(unittest.TestCase):
     def test_user_agent_pool_has_multiple_entries(self) -> None:
-        # Pattern-detection avoidance relies on the pool being non-trivial.
         self.assertGreaterEqual(len(USER_AGENT_POOL), 4)
 
 

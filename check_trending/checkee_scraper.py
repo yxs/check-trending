@@ -1,29 +1,4 @@
-"""Checkee.info scraper — HTML parsers + two (now-blocked) automated fetch paths.
-
-STATUS (2026-05): Cloudflare put a *managed JS challenge* on BOTH
-`main.php?dispdate=...` AND `personal_detail.php?casenum=...`. Plain HTTP
-clients (urllib / curl_cffi — any TLS-impersonation profile, any residential
-IP) get a 403 "Just a moment" page from both, which kills both automated paths
-below. The only working refresh is now a human-solved browser session; see
-`scripts/refresh_from_browser.py` and the README "数据更新" section. The parsers
-here (`parse_month_page`, `parse_detail_page`) are still the stable, tested
-core that the manual flow reuses.
-
-Path 1 — Daily Refresh (`daily` subcommand) — BLOCKED (detail.php now 403):
-  detail-page only. Each run did:
-    * Frontier probe: scan max_known+1 .. max_known+probe_count for new cases.
-    * Pending bucket: refresh canonical Pending where case_number % 3 == today's
-      weekday-derived bucket (Tue/Thu/Sat → every Pending case once per week).
-
-Path 2 — Manual Calibration (`calibrate` subcommand) — PARTIALLY BLOCKED:
-  Headed browser fetches main.php listings (still works), but the follow-up
-  detail fetch via curl_cffi now 403s. Each run did:
-    * Decide which months to fetch (current + previous always; earlier months
-      only if not previously calibrated, per `monthly_calibration_log.json`).
-    * Fetch listings → update `monthly_case_ids.json`.
-    * Diff vs canonical → fetch missed detail pages.
-    * Write reconciliation report.
-"""
+"""Checkee.info scraper — HTML parsers + two (now-blocked) automated fetch paths."""
 from __future__ import annotations
 
 import argparse
@@ -41,17 +16,8 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 BASE_URL = "https://www.checkee.info"
 
-# curl_cffi impersonation targets — rotate per session, not per request, so the
-# TLS/JA3/JA4 fingerprint stays consistent within a session (mismatched JA3 +
-# UA looks more bot-like than either alone). Each entry is a curl_cffi
-# `impersonate` profile that shapes TLS extensions, HTTP/2 SETTINGS, and the
-# default header order to match a real browser build.
 IMPERSONATE_POOL: tuple[str, ...] = (
     "chrome124",
     "chrome123",
@@ -60,8 +26,6 @@ IMPERSONATE_POOL: tuple[str, ...] = (
     "edge101",
 )
 
-# Kept only because tests assert pool size; UA is now driven by curl_cffi's
-# impersonation profile, not by manual rotation.
 USER_AGENT_POOL: tuple[str, ...] = IMPERSONATE_POOL
 
 DETAIL_KEYS = frozenset({
@@ -77,9 +41,6 @@ CALIBRATION_LOG_FILE = "monthly_calibration_log.json"
 SUMMARY_FILE = "crawl_summary.json"
 RECONCILIATION_REPORTS_DIR = Path("reports") / "reconciliation"
 
-# Marker pair used to trim detail HTML down to the case-info table only.
-# The literal table-open tag is split across concat to avoid blob tools mis-
-# detecting this source file as a detail-page during history rewrites.
 DETAIL_TABLE_START_MARKER = (
     "<" + 'table width="96%" border="1" align="center" cellspacing="0">'
 )
@@ -87,30 +48,18 @@ DETAIL_TABLE_END_MARKER = "<" + "/table>"
 
 TERMINAL_STATUSES = frozenset({"Clear", "Reject"})
 
-# Default project-wide data window. Anything before this is out of scope.
 DEFAULT_START_DATE = date(2025, 7, 1)
 
-# Bucket selection uses Beijing weekday so the scheduled mapping holds
-# regardless of runner timezone. CI runs in UTC; the cron `37 18 * * 1,3,5`
-# fires Mon/Wed/Fri 18:37 UTC, which is Tue/Thu/Sat 02:37 Beijing.
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
-# =============================================================================
-# Exceptions
-# =============================================================================
-
 class FetchError(Exception):
-    """A single fetch failed after all retries; caller decides what to do."""
+    pass
 
 
 class CircuitBreakerError(Exception):
-    """Too many consecutive fetch failures — abort the entire run."""
+    pass
 
-
-# =============================================================================
-# Dataclasses
-# =============================================================================
 
 @dataclass(frozen=True)
 class Cell:
@@ -144,7 +93,6 @@ class CaseRecord:
 
 @dataclass
 class RunStats:
-    """Per-run counters surfaced to logs and the GitHub workflow summary."""
     attempts: int = 0
     successes: int = 0
     failures: int = 0
@@ -165,10 +113,6 @@ class RunStats:
         d["failure_rate_pct"] = round(self.failure_rate * 100, 2)
         return d
 
-
-# =============================================================================
-# HTML parsing  (kept verbatim — these are the stable parts)
-# =============================================================================
 
 class TableParser(HTMLParser):
     def __init__(self) -> None:
@@ -325,10 +269,6 @@ def parse_int(value: str) -> int | None:
         return None
 
 
-# =============================================================================
-# Date helpers
-# =============================================================================
-
 def build_months(start: date, end: date) -> list[str]:
     months: list[str] = []
     year, month = start.year, start.month
@@ -349,10 +289,6 @@ def previous_month_label(month_label: str) -> str:
         return f"{year - 1:04d}-12"
     return f"{year:04d}-{month - 1:02d}"
 
-
-# =============================================================================
-# Storage
-# =============================================================================
 
 def find_existing_case_source(output_dir: Path) -> Path | None:
     canonical_path = output_dir / CANONICAL_CASES_FILE
@@ -415,7 +351,6 @@ def save_monthly_manifest(output_dir: Path, manifest: dict[str, list[str]]) -> N
 
 
 def load_calibration_log(output_dir: Path) -> dict[str, str]:
-    """Returns {month_label: ISO date this month was last calibrated}."""
     path = output_dir / CALIBRATION_LOG_FILE
     if not path.exists():
         return {}
@@ -440,14 +375,6 @@ def determine_calibration_targets(
     available_months: Iterable[str],
     log: dict[str, str],
 ) -> list[str]:
-    """Pick which months to (re)calibrate.
-
-    Hard rule: current month + previous month always.
-    Earlier months: only if not present in `log`.
-
-    Day-of-month does not enter the decision — we always cover the buffer
-    window via the "previous month always" rule.
-    """
     current = f"{today.year:04d}-{today.month:02d}"
     prev = previous_month_label(current)
 
@@ -459,25 +386,7 @@ def determine_calibration_targets(
     return sorted(targets)
 
 
-# =============================================================================
-# HTTP client
-# =============================================================================
-
 class PoliteHttpClient:
-    """Polite HTTP client with browser TLS impersonation (via curl_cffi),
-    jitter, long pauses, and a consecutive-failure circuit breaker.
-
-    Cloudflare bot management on checkee.info combines IP reputation with
-    JA3/JA4 TLS fingerprinting and HTTP/2 SETTINGS comparison. Plain urllib
-    presents a Python TLS fingerprint that, when combined with the Azure
-    egress IPs that GitHub-hosted runners use, scores high enough to get a
-    blanket 403. curl_cffi impersonates a real Chrome/Safari TLS handshake,
-    which clears the fingerprint signal and lets the request through.
-
-    The defaults are sized for ≤ 0.2 req/s sustained — well below the
-    empirically-measured behavioral throttle threshold.
-    """
-
     def __init__(
         self,
         delay_seconds: float = 3.0,
@@ -514,8 +423,6 @@ class PoliteHttpClient:
                 "curl_cffi is required for the daily scraper; install with "
                 "`pip install curl_cffi`"
             ) from error
-        # Pick one profile per session so JA3/JA4 stays consistent across
-        # the run — mid-session fingerprint flips are themselves a tell.
         profile = (
             random.choice(self._impersonate_profiles)
             if self._impersonate_profiles
@@ -547,7 +454,7 @@ class PoliteHttpClient:
                     f"status={response.status_code} impersonate={self._session_impersonate}",
                     flush=True,
                 )
-            except Exception as error:  # noqa: BLE001 — curl_cffi raises a wide tree
+            except Exception as error:
                 last_error = error
                 print(
                     f"fetch failed attempt={attempt} url={url} status=- "
@@ -577,10 +484,6 @@ class PoliteHttpClient:
         )
         time.sleep(pause)
 
-
-# =============================================================================
-# Detail-page → CaseRecord
-# =============================================================================
 
 def case_from_detail(
     detail: dict[str, str], start_date: date, end_date: date
@@ -627,10 +530,6 @@ def fetch_and_cache_detail(
     detail_dir: Path,
     client: PoliteHttpClient,
 ) -> str:
-    """Fetch one detail page, trim to detail-table HTML, and persist to cache.
-
-    Raises FetchError on permanent failure (CircuitBreakerError propagates).
-    """
     detail_path = detail_dir / f"{case_number}.html"
     detail_url = build_detail_url(case_number)
     html = client.fetch(detail_url)
@@ -641,12 +540,6 @@ def fetch_and_cache_detail(
     return html
 
 
-# =============================================================================
-# Path 1: Daily Refresh
-# =============================================================================
-
-# Tue (1) → bucket 0, Thu (3) → bucket 1, Sat (5) → bucket 2.
-# Other weekdays (manual dispatch) fall back to bucket 0.
 _WEEKDAY_TO_BUCKET = {1: 0, 3: 1, 5: 2}
 NUM_PENDING_BUCKETS = 3
 
@@ -658,11 +551,6 @@ def weekday_to_bucket(weekday: int) -> int:
 def select_pending_for_bucket(
     canonical: list[dict[str, Any]], bucket: int, num_buckets: int = NUM_PENDING_BUCKETS
 ) -> list[str]:
-    """Return canonical case_numbers that are non-terminal and fall in bucket.
-
-    Bucket assignment is deterministic by `int(case_number) % num_buckets`,
-    ensuring each Pending case is visited in exactly one bucket per cycle.
-    """
     selected: list[str] = []
     for record in canonical:
         if record.get("status") in TERMINAL_STATUSES:
@@ -688,12 +576,6 @@ def crawl_daily(
     client: PoliteHttpClient,
     fetch_budget: int,
 ) -> RunStats:
-    """Path 1: detail-only refresh.
-
-    Refreshes the bucket-selected Pending cases, then frontier-probes for new
-    cases above `max_known`. No main.php. No silent fallback to cache: a fetch
-    failure leaves the canonical record untouched and is counted.
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_dir = output_dir / "raw" / "details"
     detail_dir.mkdir(parents=True, exist_ok=True)
@@ -723,7 +605,6 @@ def crawl_daily(
     refresh_targets = list(pending_targets)
     random.shuffle(refresh_targets)
 
-    # ---- Pending bucket refresh ----
     for case_number in refresh_targets:
         if stats.attempts >= fetch_budget:
             print(f"fetch_budget_reached attempts={stats.attempts}", flush=True)
@@ -750,7 +631,6 @@ def crawl_daily(
                 flush=True,
             )
 
-    # ---- Frontier probe ----
     probe_start = max_known + 1
     probe_end = max_known + max(0, probe_count)
     probe_range = list(range(probe_start, probe_end + 1))
@@ -772,14 +652,11 @@ def crawl_daily(
         detail = parse_detail_page(html, case_number)
         record = case_from_detail(detail, start_date, end_date)
         if record is None:
-            # Case_number doesn't exist or check_date out of range. Treat as
-            # quiet — the placeholder page returns 200 but parses to no record.
             continue
         canonical_by_number[case_number] = record.to_dict()
         stats.new_cases_discovered += 1
         print(f"new_case_discovered case={case_number}", flush=True)
 
-    # ---- Write merged canonical ----
     merged = sorted(
         canonical_by_number.values(),
         key=lambda r: (r.get("check_date", ""), str(r.get("case_number", ""))),
@@ -794,10 +671,6 @@ def crawl_daily(
     return stats
 
 
-# =============================================================================
-# Path 2: Manual Calibration
-# =============================================================================
-
 def crawl_calibrate(
     *,
     start_date: date,
@@ -806,14 +679,6 @@ def crawl_calibrate(
     monthly_fetcher: Callable[[str], str],
     detail_client: PoliteHttpClient,
 ) -> dict[str, Any]:
-    """Path 2: monthly-listing calibration via headed browser.
-
-    Decides which months to fetch using `monthly_calibration_log.json`; updates
-    `monthly_case_ids.json`; for any case_id present in a listing but missing
-    from canonical, fetches the detail page and merges. Writes a per-run
-    reconciliation report. Does NOT refresh existing Pending — Path 1 owns
-    that.
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
     detail_dir = output_dir / "raw" / "details"
     detail_dir.mkdir(parents=True, exist_ok=True)
@@ -862,7 +727,6 @@ def crawl_calibrate(
     save_monthly_manifest(output_dir, manifest)
     save_calibration_log(output_dir, log)
 
-    # ---- Diff vs canonical → fetch missing details (PoliteHttpClient) ----
     listing_ids: set[str] = set()
     listing_records: dict[str, CaseRecord] = {}
     for cases in listings_collected.values():
@@ -883,7 +747,6 @@ def crawl_calibrate(
         detail = parse_detail_page(html, case_number)
         record = case_from_detail(detail, start_date, end_date)
         if record is None:
-            # Fall back to monthly-listing data if detail page can't be parsed.
             record = listing_records[case_number]
         canonical_by_number[case_number] = record.to_dict()
         fetched_missing.append(case_number)
@@ -920,10 +783,6 @@ def crawl_calibrate(
     return report
 
 
-# =============================================================================
-# Output writing
-# =============================================================================
-
 def write_outputs(
     records: list[CaseRecord] | None,
     output_dir: Path,
@@ -932,14 +791,6 @@ def write_outputs(
     *,
     merged_records: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Persist canonical + summary.
-
-    Two calling conventions:
-      - `records` only: caller supplies a fresh list; merge with existing
-        canonical by case_number (legacy behavior, used by tests).
-      - `merged_records` provided: caller has already merged in-memory; just
-        persist as-is. Path 1 / Path 2 use this form.
-    """
     json_path = output_dir / CANONICAL_CASES_FILE
     summary_path = output_dir / SUMMARY_FILE
 
@@ -1011,10 +862,6 @@ def _summary_range(
         "end_date": max(end_date.isoformat(), max(observed)),
     }
 
-
-# =============================================================================
-# CLI
-# =============================================================================
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(

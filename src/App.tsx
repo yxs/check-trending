@@ -26,7 +26,6 @@ import type {
 } from './types';
 import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL, NOTES_PATH } from './site';
 
-// Code-split: the /notes page (and its search helpers) load only when visited.
 const NotesPage = lazy(() => import('./NotesPage'));
 import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePreference } from './theme';
 import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
@@ -120,9 +119,7 @@ export default function App() {
           setPageviewsTotal(payload.count);
         }
       })
-      .catch(() => {
-        // Silent: adblocker / network failure shouldn't surface to user.
-      });
+      .catch(() => {});
     return () => controller.abort();
   }, []);
 
@@ -231,9 +228,10 @@ export default function App() {
 
   if (route === NOTES_PATH) {
     return (
-      <Suspense fallback={<main className="page"><p className="muted">正在加载 Note 搜索…</p></main>}>
+      <Suspense fallback={<main className="page"><p className="muted">正在加载 Case Note 搜索…</p></main>}>
         <NotesPage
           onNavigateHome={() => navigate('/')}
+          onNavigateDonate={() => navigate(DONATE_PATH)}
           themeControl={<ThemeSwitch preference={themePreference} onChange={setThemePreference} />}
         />
       </Suspense>
@@ -266,7 +264,7 @@ export default function App() {
             <a href={DONATE_PATH} onClick={(event) => {
               event.preventDefault();
               navigate(DONATE_PATH);
-            }}>支持</a>
+            }}>Donate · 支持本站</a>
             <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
           </nav>
         </div>
@@ -291,8 +289,8 @@ export default function App() {
               </svg>
             </span>
             <span className="notes-cta-text">
-              <strong>Note 全文搜索</strong>
-              <span>搜 2017 年至今的案例 Note</span>
+              <strong>Case Note 全文搜索</strong>
+              <span>搜 2017 年至今的 Case Note</span>
             </span>
             <span className="notes-cta-arrow" aria-hidden="true">›</span>
           </a>

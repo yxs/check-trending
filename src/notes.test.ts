@@ -63,49 +63,49 @@ describe('searchNotes', () => {
   const blobs = withBlobs(cases);
 
   it('returns all cases (filtered) for an empty query', () => {
-    const out = searchNotes(cases, blobs, '', DEFAULT_NOTE_FILTERS, 100);
+    const out = searchNotes(cases, blobs, '', DEFAULT_NOTE_FILTERS);
     expect(out.total).toBe(3);
-    expect(out.results).toHaveLength(3);
+    expect(out.matches).toHaveLength(3);
   });
 
   it('AND-matches every term against the blob', () => {
-    const out = searchNotes(cases, blobs, 'social approved', DEFAULT_NOTE_FILTERS, 100);
-    expect(out.results.map((record) => record.cn)).toEqual(['1']);
+    const out = searchNotes(cases, blobs, 'social approved', DEFAULT_NOTE_FILTERS);
+    expect(out.matches.map((record) => record.cn)).toEqual(['1']);
   });
 
   it('matches CJK keywords', () => {
-    const out = searchNotes(cases, blobs, '补料', DEFAULT_NOTE_FILTERS, 100);
-    expect(out.results.map((record) => record.cn)).toEqual(['2']);
+    const out = searchNotes(cases, blobs, '补料', DEFAULT_NOTE_FILTERS);
+    expect(out.matches.map((record) => record.cn)).toEqual(['2']);
   });
 
   it('applies the status filter', () => {
     const filters: NoteFilters = { ...DEFAULT_NOTE_FILTERS, status: 'Pending' };
-    const out = searchNotes(cases, blobs, '', filters, 100);
-    expect(out.results.map((record) => record.cn)).toEqual(['2']);
+    const out = searchNotes(cases, blobs, '', filters);
+    expect(out.matches.map((record) => record.cn)).toEqual(['2']);
   });
 
   it('applies the visa-group filter', () => {
     const filters: NoteFilters = { ...DEFAULT_NOTE_FILTERS, visaGroup: 'work' };
-    const out = searchNotes(cases, blobs, '', filters, 100);
-    expect(out.results.map((record) => record.cn)).toEqual(['2']);
+    const out = searchNotes(cases, blobs, '', filters);
+    expect(out.matches.map((record) => record.cn)).toEqual(['2']);
   });
 
   it('applies the year filter', () => {
     const filters: NoteFilters = { ...DEFAULT_NOTE_FILTERS, year: '2024' };
-    const out = searchNotes(cases, blobs, '', filters, 100);
-    expect(out.results.map((record) => record.cn).sort()).toEqual(['1', '3']);
+    const out = searchNotes(cases, blobs, '', filters);
+    expect(out.matches.map((record) => record.cn).sort()).toEqual(['1', '3']);
   });
 
   it('applies the region filter (overseas)', () => {
     const filters: NoteFilters = { ...DEFAULT_NOTE_FILTERS, region: 'overseas' };
-    const out = searchNotes(cases, blobs, '', filters, 100);
-    expect(out.results.map((record) => record.cn)).toEqual(['2']);
+    const out = searchNotes(cases, blobs, '', filters);
+    expect(out.matches.map((record) => record.cn)).toEqual(['2']);
   });
 
-  it('reports total beyond the render limit but caps the results array', () => {
-    const out = searchNotes(cases, blobs, '', DEFAULT_NOTE_FILTERS, 2);
+  it('returns every match, with total === matches.length', () => {
+    const out = searchNotes(cases, blobs, '', DEFAULT_NOTE_FILTERS);
     expect(out.total).toBe(3);
-    expect(out.results).toHaveLength(2);
+    expect(out.matches).toHaveLength(3);
   });
 });
 

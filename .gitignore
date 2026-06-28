@@ -12,3 +12,6 @@ data/checkee/last_run_summary.json
 
 # browser-harvested raw monthly listings (regenerated, not committed)
 _harvest_*.json
+
+# stale scraper HTML cache (dead automated paths)
+data/checkee/raw/

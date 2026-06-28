@@ -14,7 +14,7 @@ def resolve_source_file() -> Path:
     if not CANONICAL_SOURCE.exists():
         raise FileNotFoundError(
             f"Missing canonical source file: {CANONICAL_SOURCE}. "
-            "Run the scraper to generate data/checkee/checkee_cases.json first."
+            "Run scripts/sync_dashboard_from_harvest.py first."
         )
     return CANONICAL_SOURCE
 
