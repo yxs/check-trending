@@ -46,6 +46,11 @@ describe('buildSearchBlob', () => {
     expect(blob).toContain('shanghai');
     expect(blob).toContain('f1');
   });
+
+  it('excludes the display_id so usernames do not pollute keyword search', () => {
+    const blob = buildSearchBlob(makeCase({ id: 'ds5535fan', nt: 'approved' }));
+    expect(blob).not.toContain('ds5535fan');
+  });
 });
 
 describe('noteYear', () => {
@@ -76,6 +81,12 @@ describe('searchNotes', () => {
   it('matches CJK keywords', () => {
     const out = searchNotes(cases, blobs, '补料', DEFAULT_NOTE_FILTERS);
     expect(out.matches.map((record) => record.cn)).toEqual(['2']);
+  });
+
+  it('does not match when the term only appears in the hidden display_id', () => {
+    const phantom = [makeCase({ cn: '9', id: '45535', nt: 'approved fast, no check' })];
+    const out = searchNotes(phantom, withBlobs(phantom), '5535', DEFAULT_NOTE_FILTERS);
+    expect(out.matches).toEqual([]);
   });
 
   it('applies the status filter', () => {

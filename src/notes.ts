@@ -49,7 +49,7 @@ export function noteYear(record: NoteCase): string {
 }
 
 export function buildSearchBlob(record: NoteCase): string {
-  return [record.nt, record.mj, record.co, record.vt, record.ve, record.id, record.st]
+  return [record.nt, record.mj, record.co, record.vt, record.ve, record.st]
     .join('  ')
     .toLowerCase();
 }
