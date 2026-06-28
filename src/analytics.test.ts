@@ -93,6 +93,20 @@ describe('pending backlog', () => {
       { threshold: 270, count: 0 },
     ]);
   });
+
+  it('excludes stale Pending cases waiting beyond a year (presumed resolved offline)', () => {
+    const cases = [
+      makeCase({ status: 'Pending', waiting_days: 300 }),
+      makeCase({ status: 'Pending', waiting_days: 365 }),
+      makeCase({ status: 'Pending', waiting_days: 366 }),
+      makeCase({ status: 'Pending', waiting_days: 1200 }),
+    ];
+    expect(buildPendingBacklog(cases)).toEqual([
+      { threshold: 90, count: 2 },
+      { threshold: 180, count: 2 },
+      { threshold: 270, count: 2 },
+    ]);
+  });
 });
 
 describe('filtering and daily clear series', () => {

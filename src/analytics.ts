@@ -14,11 +14,20 @@ import type {
 } from './types';
 
 export const LONG_CHECK_THRESHOLDS = [90, 180, 270] as const;
+export const STALE_PENDING_DAYS = 365;
 
 const MAINLAND_CONSULATES = new Set(['BeiJing', 'ShangHai', 'GuangZhou', 'ShenYang', 'WuHan', 'ChengDu']);
 
 export function hasNote(record: CaseRecord): boolean {
   return Boolean(record.detail?.Note?.trim());
+}
+
+export function isStalePending(record: CaseRecord): boolean {
+  return (
+    record.status !== 'Clear' &&
+    record.status !== 'Reject' &&
+    (record.waiting_days ?? 0) > STALE_PENDING_DAYS
+  );
 }
 
 export function getVisaGroup(visaType: string): Exclude<VisaGroup, 'all'> {
@@ -280,7 +289,7 @@ export function buildPendingBacklog(
   return thresholds.map((threshold) => {
     let count = 0;
     for (const record of records) {
-      if (record.status !== 'Pending') {
+      if (record.status !== 'Pending' || isStalePending(record)) {
         continue;
       }
       if ((record.waiting_days ?? 0) >= threshold) {

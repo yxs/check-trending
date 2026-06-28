@@ -291,6 +291,12 @@ h2 {
   margin: -4px 0 20px;
 }
 
+.backlog-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .backlog-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

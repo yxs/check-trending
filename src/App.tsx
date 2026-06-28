@@ -10,6 +10,7 @@ import {
   getDateTickIndexes,
   getRegionGroup,
   hasNote,
+  isStalePending,
   movingAverage,
 } from './analytics';
 import type {
@@ -364,7 +365,7 @@ export default function App() {
         <Metric label="P90 等待" value={`${metrics.p90Wait} 天`} />
       </section>
 
-      <BacklogRow backlog={pendingBacklog} totalPending={metrics.pending} />
+      <BacklogRow backlog={pendingBacklog} totalPending={metrics.activePending} />
 
       <section className="panel chart-panel">
         <div className="section-heading">
@@ -619,6 +620,7 @@ function BacklogRow({ backlog, totalPending }: { backlog: PendingBacklog[]; tota
           );
         })}
       </div>
+      <p className="backlog-note">已排除 check_date 超 1 年仍挂 Pending 的旧案(大概率已线下结案、未回 checkee 更新)。</p>
     </section>
   );
 }
@@ -860,6 +862,7 @@ function smoothPath(points: Array<{ x: number; y: number }>): string {
 
 function buildMetrics(records: CaseRecord[]) {
   const waits = records
+    .filter((record) => !isStalePending(record))
     .map((record) => record.waiting_days)
     .filter((waitingDays): waitingDays is number => waitingDays !== null)
     .sort((left, right) => left - right);
@@ -867,6 +870,7 @@ function buildMetrics(records: CaseRecord[]) {
     total: records.length,
     clear: records.filter((record) => record.status === 'Clear').length,
     pending: records.filter((record) => record.status === 'Pending').length,
+    activePending: records.filter((record) => record.status === 'Pending' && !isStalePending(record)).length,
     withNote: records.filter(hasNote).length,
     medianWait: percentile(waits, 0.5),
     p90Wait: percentile(waits, 0.9),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the dashboard canonical + app-data.json from _harvest_*.json (check_date >= 2025-07-01)."""
+"""Rebuild the dashboard canonical + app-data.json from _harvest_*.json (check_date >= 2023-01-01)."""
 import json, glob, subprocess, sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,7 +8,7 @@ REPO = Path('.')
 DATA = REPO / 'data' / 'checkee'
 CANON = DATA / 'checkee_cases.json'
 SUMMARY = DATA / 'crawl_summary.json'
-START = '2025-07-01'
+START = '2023-01-01'
 BASE = 'https://www.checkee.info'
 TERMINAL = {'Clear', 'Reject'}
 TODAY = date.today()
