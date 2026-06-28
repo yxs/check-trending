@@ -1,7 +1,6 @@
 import type {
   CheckDepth,
   Filters,
-  LowTideThreshold,
   NoteCohort,
   TimeRangeDays,
   VisaGroup,
@@ -10,26 +9,24 @@ import type {
 
 type ViewState = {
   filters: Filters;
-  lowTideThreshold: LowTideThreshold;
 };
 
 const CHECK_DEPTH_VALUES: CheckDepth[] = ['all', 'gte7', 'gte30', 'gte60', 'gte90', 'gte180', 'gte270'];
 const NOTE_COHORT_VALUES: NoteCohort[] = ['all', 'withNote', 'withoutNote'];
 const VISA_GROUP_VALUES: VisaGroup[] = ['all', 'b', 'work', 'student', 'other'];
-const LOW_TIDE_VALUES: LowTideThreshold[] = [1, 2, 5];
 const TIME_RANGE_PARAM_TO_VALUE: Record<string, TimeRangeDays> = {
   all: 'all',
-  '30': 30,
-  '60': 60,
   '90': 90,
   '180': 180,
+  '365': 365,
+  '730': 730,
 };
 const TIME_RANGE_VALUE_TO_PARAM: Record<string, string> = {
   all: 'all',
-  '30': '30',
-  '60': '60',
   '90': '90',
   '180': '180',
+  '365': '365',
+  '730': '730',
 };
 const ALLOWED_SUBTYPE_BY_GROUP: Record<VisaGroup, VisaSubtype[]> = {
   all: ['all'],
@@ -39,11 +36,7 @@ const ALLOWED_SUBTYPE_BY_GROUP: Record<VisaGroup, VisaSubtype[]> = {
   student: ['all', 'f', 'j'],
 };
 
-export function readViewStateFromSearch(
-  search: string,
-  defaultFilters: Filters,
-  defaultLowTideThreshold: LowTideThreshold,
-): ViewState {
+export function readViewStateFromSearch(search: string, defaultFilters: Filters): ViewState {
   const params = new URLSearchParams(search);
 
   const visaGroup = pickOrDefault(params.get('vg'), VISA_GROUP_VALUES, defaultFilters.visaGroup);
@@ -53,7 +46,6 @@ export function readViewStateFromSearch(
   const region = normalizeRegion(params.get('r'), defaultFilters.region);
   const timeRangeDays = parseTimeRange(params.get('t'), defaultFilters.timeRangeDays);
   const selectedDate = normalizeDate(params.get('s'));
-  const lowTideThreshold = parseLowTideThreshold(params.get('lt'), defaultLowTideThreshold);
 
   return {
     filters: {
@@ -65,16 +57,10 @@ export function readViewStateFromSearch(
       visaGroup,
       visaSubtype,
     },
-    lowTideThreshold,
   };
 }
 
-export function buildSearchFromViewState(
-  filters: Filters,
-  lowTideThreshold: LowTideThreshold,
-  defaultFilters: Filters,
-  defaultLowTideThreshold: LowTideThreshold,
-): string {
+export function buildSearchFromViewState(filters: Filters, defaultFilters: Filters): string {
   const params = new URLSearchParams();
 
   if (filters.visaGroup !== defaultFilters.visaGroup) {
@@ -97,9 +83,6 @@ export function buildSearchFromViewState(
   }
   if (filters.selectedDate) {
     params.set('s', filters.selectedDate);
-  }
-  if (lowTideThreshold !== defaultLowTideThreshold) {
-    params.set('lt', String(lowTideThreshold));
   }
 
   return params.toString();
@@ -132,12 +115,4 @@ function parseTimeRange(value: string | null, fallback: TimeRangeDays): TimeRang
     return fallback;
   }
   return TIME_RANGE_PARAM_TO_VALUE[value] ?? fallback;
-}
-
-function parseLowTideThreshold(value: string | null, fallback: LowTideThreshold): LowTideThreshold {
-  if (!value) {
-    return fallback;
-  }
-  const numberValue = Number(value);
-  return LOW_TIDE_VALUES.includes(numberValue as LowTideThreshold) ? (numberValue as LowTideThreshold) : fallback;
 }

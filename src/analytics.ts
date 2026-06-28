@@ -2,19 +2,19 @@ import type {
   CaseRecord,
   CheckDepth,
   CheckDepthBucket,
-  CurrentStatus,
   DailyClearPoint,
   Filters,
-  LowTideRun,
+  Granularity,
   MovingAveragePoint,
   PendingBacklog,
   RegionFilter,
+  TimeRangeDays,
   VisaSubtype,
   VisaGroup,
 } from './types';
 
 export const LONG_CHECK_THRESHOLDS = [90, 180, 270] as const;
-export const STALE_PENDING_DAYS = 365;
+export const STALE_PENDING_DAYS = 730;
 
 const MAINLAND_CONSULATES = new Set(['BeiJing', 'ShangHai', 'GuangZhou', 'ShenYang', 'WuHan', 'ChengDu']);
 
@@ -145,17 +145,18 @@ export function filterCases(records: CaseRecord[], filters: Filters): CaseRecord
 export function buildDailyClearSeries(records: CaseRecord[]): DailyClearPoint[] {
   const countsByDate = new Map<string, DailyClearPoint>();
   for (const record of records) {
-    if (record.status !== 'Clear' || !record.complete_date) {
+    if (!record.complete_date || (record.status !== 'Clear' && record.status !== 'Reject')) {
       continue;
     }
     const point = countsByDate.get(record.complete_date) ?? {
       date: record.complete_date,
       count: 0,
-      noteCount: 0,
+      rejectCount: 0,
     };
-    point.count += 1;
-    if (hasNote(record)) {
-      point.noteCount += 1;
+    if (record.status === 'Reject') {
+      point.rejectCount += 1;
+    } else {
+      point.count += 1;
     }
     countsByDate.set(record.complete_date, point);
   }
@@ -166,7 +167,7 @@ export function buildDailyClearSeries(records: CaseRecord[]): DailyClearPoint[] 
   return buildDateRange(dates[0], dates[dates.length - 1]).map((date) => countsByDate.get(date) ?? {
     date,
     count: 0,
-    noteCount: 0,
+    rejectCount: 0,
   });
 }
 
@@ -182,55 +183,52 @@ export function movingAverage(series: DailyClearPoint[], windowSize: number): Mo
   });
 }
 
+export function granularityForRange(timeRangeDays: TimeRangeDays): Granularity {
+  if (timeRangeDays === 'all') {
+    return 'month';
+  }
+  return timeRangeDays >= 365 ? 'week' : 'day';
+}
+
+export function trailingWindowForGranularity(granularity: Granularity): number {
+  if (granularity === 'month') {
+    return 3;
+  }
+  return granularity === 'week' ? 4 : 7;
+}
+
+export function bucketClearSeries(series: DailyClearPoint[], granularity: Granularity): DailyClearPoint[] {
+  if (granularity === 'day') {
+    return series;
+  }
+  const keyOf = granularity === 'month' ? monthStart : weekStart;
+  const buckets = new Map<string, DailyClearPoint>();
+  for (const point of series) {
+    const key = keyOf(point.date);
+    const bucket = buckets.get(key) ?? { date: key, count: 0, rejectCount: 0 };
+    bucket.count += point.count;
+    bucket.rejectCount += point.rejectCount;
+    buckets.set(key, bucket);
+  }
+  return [...buckets.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function monthStart(date: string): string {
+  return `${date.slice(0, 7)}-01`;
+}
+
+function weekStart(date: string): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  const isoDayOfWeek = (value.getUTCDay() + 6) % 7;
+  value.setUTCDate(value.getUTCDate() - isoDayOfWeek);
+  return value.toISOString().slice(0, 10);
+}
+
 export function getNewestRelevantDate(records: CaseRecord[]): string {
   return records.reduce((newest, record) => {
     const candidate = record.complete_date ?? record.check_date;
     return candidate > newest ? candidate : newest;
   }, '0000-00-00');
-}
-
-export function findLowTideRuns(series: DailyClearPoint[], maxDailyCount: number, minDays: number): LowTideRun[] {
-  const runs: LowTideRun[] = [];
-  let startDate: string | null = null;
-  let endDate: string | null = null;
-  let days = 0;
-  let totalClears = 0;
-
-  for (const point of series) {
-    if (point.count <= maxDailyCount) {
-      startDate ??= point.date;
-      endDate = point.date;
-      days += 1;
-      totalClears += point.count;
-      continue;
-    }
-    if (startDate && endDate && days >= minDays) {
-      runs.push({ startDate, endDate, days, totalClears });
-    }
-    startDate = null;
-    endDate = null;
-    days = 0;
-    totalClears = 0;
-  }
-
-  if (startDate && endDate && days >= minDays) {
-    runs.push({ startDate, endDate, days, totalClears });
-  }
-
-  return runs.sort((left, right) => right.days - left.days || left.startDate.localeCompare(right.startDate));
-}
-
-export function buildCurrentStatus(series: DailyClearPoint[], maxDailyCount: number, minDays: number): CurrentStatus {
-  const latestDate = series[series.length - 1]?.date ?? '';
-  const lowRuns = findLowTideRuns(series, maxDailyCount, minDays);
-  const currentLow = lowRuns.find((run) => run.endDate === latestDate) ?? null;
-  return {
-    latestDate,
-    currentLow,
-    clears7d: sumLastDays(series, 7),
-    clears14d: sumLastDays(series, 14),
-    clears30d: sumLastDays(series, 30),
-  };
 }
 
 export function getDateTickIndexes(dates: string[], stepPx: number, minSpacingPx: number): number[] {
@@ -276,10 +274,6 @@ function buildDateRange(startDate: string, endDate: string): string[] {
     current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
-}
-
-function sumLastDays(series: DailyClearPoint[], days: number): number {
-  return series.slice(-days).reduce((sum, point) => sum + point.count, 0);
 }
 
 export function buildPendingBacklog(

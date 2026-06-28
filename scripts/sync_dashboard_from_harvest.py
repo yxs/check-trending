@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the dashboard canonical + app-data.json from _harvest_*.json (check_date >= 2023-01-01)."""
+"""Rebuild the dashboard canonical + app-data.json from _harvest_*.json (check_date >= 2021-01-01)."""
 import json, glob, subprocess, sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,7 +8,7 @@ REPO = Path('.')
 DATA = REPO / 'data' / 'checkee'
 CANON = DATA / 'checkee_cases.json'
 SUMMARY = DATA / 'crawl_summary.json'
-START = '2023-01-01'
+START = '2021-01-01'
 BASE = 'https://www.checkee.info'
 TERMINAL = {'Clear', 'Reject'}
 TODAY = date.today()
@@ -17,13 +17,22 @@ def to_int(v):
     try: return int(v)
     except (TypeError, ValueError): return None
 
+def valid_iso(value):
+    try:
+        return datetime.strptime(value, '%Y-%m-%d').date().year >= 2000
+    except (TypeError, ValueError):
+        return False
+
 def waiting_days(status, check_date, harvested_wd):
+    days = None
     if status not in TERMINAL:
         try:
-            return (TODAY - datetime.strptime(check_date, '%Y-%m-%d').date()).days
+            days = (TODAY - datetime.strptime(check_date, '%Y-%m-%d').date()).days
         except (TypeError, ValueError):
-            pass
-    return to_int(harvested_wd)
+            days = None
+    if days is None:
+        days = to_int(harvested_wd)
+    return days if days is not None and days >= 0 else None
 
 hv = {}
 for f in sorted(glob.glob('_harvest_*.json')):
@@ -41,7 +50,7 @@ by_cn = {str(r['case_number']): r for r in canon}
 flips = new = note_updates = 0
 for cn, r in hv.items():
     cmp_ = r.get('cmp') or ''
-    cmp_ = None if cmp_ in ('', '0000-00-00') else cmp_
+    cmp_ = cmp_ if valid_iso(cmp_) else None
     note = (r.get('note') or '').strip()
     prev = by_cn.get(cn)
     detail = dict(prev['detail']) if (prev and prev.get('detail')) else {'case_number': cn}

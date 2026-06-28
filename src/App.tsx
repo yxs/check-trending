@@ -2,23 +2,23 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import {
-  buildCurrentStatus,
+  bucketClearSeries,
   buildDailyClearSeries,
   buildPendingBacklog,
-  findLowTideRuns,
   filterCases,
   getDateTickIndexes,
   getRegionGroup,
+  granularityForRange,
   hasNote,
   isStalePending,
   movingAverage,
+  trailingWindowForGranularity,
 } from './analytics';
 import type {
   CaseRecord,
-  CurrentStatus,
   DailyClearPoint,
   Filters,
-  LowTideThreshold,
+  Granularity,
   PendingBacklog,
   TimeRangeDays,
   VisaGroup,
@@ -40,22 +40,16 @@ const DEFAULT_FILTERS: Filters = {
   visaGroup: 'all',
   visaSubtype: 'all',
 };
-const DEFAULT_LOW_TIDE_THRESHOLD: LowTideThreshold = 5;
-
 const numberFormatter = new Intl.NumberFormat('zh-CN');
 const TIME_RANGE_MAP: Record<string, TimeRangeDays> = {
   all: 'all',
-  '30': 30,
-  '60': 60,
   '90': 90,
   '180': 180,
-};
-const LOW_TIDE_THRESHOLD_MAP: Record<string, LowTideThreshold> = {
-  '1': 1,
-  '2': 2,
-  '5': 5,
+  '365': 365,
+  '730': 730,
 };
 const CHART_PADDING = { top: 24, right: 56, bottom: 42, left: 48 } as const;
+const DETAIL_CAP = 100;
 const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label: string }>> = {
   all: [{ value: 'all', label: '全部类型' }],
   b: [{ value: 'all', label: 'B1 + B2' }],
@@ -75,16 +69,16 @@ const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label:
 
 export default function App() {
   const initialViewState = useMemo(
-    () => readViewStateFromSearch(window.location.search, DEFAULT_FILTERS, DEFAULT_LOW_TIDE_THRESHOLD),
+    () => readViewStateFromSearch(window.location.search, DEFAULT_FILTERS),
     [],
   );
   const [data, setData] = useState<WebData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pageviewsTotal, setPageviewsTotal] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(initialViewState.filters);
-  const [lowTideThreshold, setLowTideThreshold] = useState<LowTideThreshold>(initialViewState.lowTideThreshold);
+  const [chartFocus, setChartFocus] = useState<{ start: string; end: string; label: string } | null>(null);
+  const [detailStatus, setDetailStatus] = useState<'all' | 'Clear' | 'Reject'>('all');
   const [mobileFiltersExpanded, setMobileFiltersExpanded] = useState(false);
-  const [dayWidth, setDayWidth] = useState(8);
   const [route, setRoute] = useState(window.location.pathname);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
     parseThemePreference(window.localStorage.getItem(THEME_STORAGE_KEY)),
@@ -145,13 +139,8 @@ export default function App() {
   useEffect(() => {
     const onPopState = () => {
       setRoute(window.location.pathname);
-      const nextState = readViewStateFromSearch(
-        window.location.search,
-        DEFAULT_FILTERS,
-        DEFAULT_LOW_TIDE_THRESHOLD,
-      );
+      const nextState = readViewStateFromSearch(window.location.search, DEFAULT_FILTERS);
       setFilters(nextState.filters);
-      setLowTideThreshold(nextState.lowTideThreshold);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -161,19 +150,14 @@ export default function App() {
     if (route === DONATE_PATH || route === NOTES_PATH) {
       return;
     }
-    const search = buildSearchFromViewState(
-      filters,
-      lowTideThreshold,
-      DEFAULT_FILTERS,
-      DEFAULT_LOW_TIDE_THRESHOLD,
-    );
+    const search = buildSearchFromViewState(filters, DEFAULT_FILTERS);
     const path = window.location.pathname;
     const nextUrl = search ? `${path}?${search}` : path;
     const currentUrl = `${path}${window.location.search}`;
     if (currentUrl !== nextUrl) {
       window.history.replaceState({}, '', nextUrl);
     }
-  }, [filters, lowTideThreshold, route]);
+  }, [filters, route]);
 
   const consulates = useMemo(() => {
     if (!data) {
@@ -186,30 +170,45 @@ export default function App() {
 
   const filteredCases = useMemo(() => (data ? filterCases(data.cases, filters) : []), [data, filters]);
   const clearSeries = useMemo(() => buildDailyClearSeries(filteredCases), [filteredCases]);
-  const averageSeries = useMemo(() => movingAverage(clearSeries, 7), [clearSeries]);
-  const lowTideRuns = useMemo(
-    () => findLowTideRuns(clearSeries, lowTideThreshold, 5)
-      .sort((left, right) => right.endDate.localeCompare(left.endDate))
-      .slice(0, 5),
-    [clearSeries, lowTideThreshold],
+  const baseGranularity = granularityForRange(filters.timeRangeDays);
+  const chartGranularity: Granularity = chartFocus ? 'day' : baseGranularity;
+  const chartSeries = useMemo(() => {
+    const scoped = chartFocus
+      ? clearSeries.filter((point) => point.date >= chartFocus.start && point.date <= chartFocus.end)
+      : clearSeries;
+    return bucketClearSeries(scoped, chartGranularity);
+  }, [clearSeries, chartFocus, chartGranularity]);
+  const chartAverage = useMemo(
+    () => movingAverage(chartSeries, trailingWindowForGranularity(chartGranularity)),
+    [chartSeries, chartGranularity],
   );
-  const currentStatus = useMemo(
-    () => buildCurrentStatus(clearSeries, lowTideThreshold, 5),
-    [clearSeries, lowTideThreshold],
-  );
-  const selectedCases = useMemo(() => {
-    if (!filters.selectedDate) {
-      return [];
+  const detailView = useMemo(() => {
+    let list = filteredCases.filter(
+      (record) => record.status === 'Clear' || record.status === 'Reject',
+    );
+    if (detailStatus !== 'all') {
+      list = list.filter((record) => record.status === detailStatus);
     }
-    return filteredCases
-      .filter((record) => record.status === 'Clear' && record.complete_date === filters.selectedDate)
-      .sort((left, right) => {
-        if (hasNote(left) !== hasNote(right)) {
-          return hasNote(left) ? -1 : 1;
-        }
-        return (right.waiting_days ?? 0) - (left.waiting_days ?? 0);
-      });
-  }, [filteredCases, filters.selectedDate]);
+    if (filters.selectedDate) {
+      list = list.filter((record) => record.complete_date === filters.selectedDate);
+    } else if (chartFocus) {
+      list = list.filter(
+        (record) =>
+          record.complete_date != null &&
+          record.complete_date >= chartFocus.start &&
+          record.complete_date <= chartFocus.end,
+      );
+    }
+    const sorted = [...list].sort((left, right) =>
+      (right.complete_date ?? '').localeCompare(left.complete_date ?? ''),
+    );
+    return { total: sorted.length, rows: sorted.slice(0, DETAIL_CAP) };
+  }, [filteredCases, detailStatus, filters.selectedDate, chartFocus]);
+  const scopeLabel = filters.selectedDate
+    ? `完成于 ${filters.selectedDate}`
+    : chartFocus
+      ? chartFocus.label
+      : '';
   const metrics = useMemo(() => buildMetrics(filteredCases), [filteredCases]);
   const pendingBacklog = useMemo(() => buildPendingBacklog(filteredCases), [filteredCases]);
   const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters]);
@@ -251,6 +250,9 @@ export default function App() {
     );
   }
 
+  const granularityLabel = chartGranularity === 'month' ? '每月' : chartGranularity === 'week' ? '每周' : '每日';
+  const trailingLabel = chartGranularity === 'month' ? '3 月' : chartGranularity === 'week' ? '4 周' : '7 日';
+
   return (
     <main className="page">
       <header className="hero">
@@ -258,7 +260,7 @@ export default function App() {
           <p className="eyebrow">Check Trending</p>
           <h1>签证 Check 出签趋势</h1>
           <p className="lede">
-            基于 Checkee 公开样本，观察每日 Clear 节奏与等待时长变化。
+            基于 Checkee 公开样本，观察 Clear 出签节奏与等待时长变化。
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
@@ -273,7 +275,7 @@ export default function App() {
           <div className="freshness">
             <span>数据范围</span>
             <strong>{data.summary.start_date} 至 {data.summary.end_date}</strong>
-            <span>更新于 {formatGeneratedAt(data.summary.generated_at)}</span>
+            <span>共 {numberFormatter.format(data.summary.case_count)} 条样本 · 更新于 {formatGeneratedAt(data.summary.generated_at)}</span>
           </div>
           <a
             className="notes-cta"
@@ -347,12 +349,12 @@ export default function App() {
             <option key={consulate} value={consulate}>{consulate}</option>
           ))}
         </Select>
-        <Select label="时间范围" value={String(filters.timeRangeDays)} onChange={(timeRangeDays) => updateFilters({ timeRangeDays: parseTimeRange(timeRangeDays) })}>
-          <option value="all">全部</option>
-          <option value="30">最近 30 天</option>
-          <option value="60">最近 60 天</option>
-          <option value="90">最近 90 天</option>
-          <option value="180">最近 180 天</option>
+        <Select label="时间范围" value={String(filters.timeRangeDays)} onChange={(value) => { setChartFocus(null); updateFilters({ timeRangeDays: parseTimeRange(value) }); }}>
+          <option value="all">全部 · 月度</option>
+          <option value="730">最近 24 个月 · 周</option>
+          <option value="365">最近 12 个月 · 周</option>
+          <option value="180">最近 180 天 · 日</option>
+          <option value="90">最近 90 天 · 日</option>
         </Select>
       </section>
 
@@ -370,54 +372,53 @@ export default function App() {
       <section className="panel chart-panel">
         <div className="section-heading">
           <div>
-            <h2>每日 Clear 趋势</h2>
-            <p>柱子表示每天 Clear 数量（含 0 Clear 日期），橙线表示 7 日平均，深蓝部分表示当天含 Note 的 Clear。</p>
+            <div className="chart-titleline">
+              <h2>Clear 趋势 · {granularityLabel}</h2>
+              <span className="chart-legend" aria-hidden="true">
+                <span className="lg lg-clear">Clear</span>
+                <span className="lg lg-reject">Reject</span>
+              </span>
+            </div>
+            <p>
+              {chartFocus
+                ? `聚焦 ${chartFocus.label} 每日明细 · 灰线 ${trailingLabel}均线`
+                : `${granularityLabel} Clear · 灰线 ${trailingLabel}均线${baseGranularity === 'day' ? '' : ` · 点击柱状条查看${baseGranularity === 'month' ? '月' : '周'}详情`}`}
+            </p>
           </div>
           <div className="chart-actions">
-            <span className="zoom-indicator">图表缩放：{getZoomLabel(dayWidth)}</span>
-            <button
-              className="icon-button"
-              aria-label="放大"
-              onClick={() => setDayWidth((current) => clamp(current * 1.2, 3, 30))}
-            >
-              +
-            </button>
-            <button
-              className="icon-button"
-              aria-label="缩小"
-              onClick={() => setDayWidth((current) => clamp(current / 1.2, 3, 30))}
-            >
-              −
-            </button>
+            {chartFocus && (
+              <button className="ghost-button" onClick={() => setChartFocus(null)}>
+                ← 返回{baseGranularity === 'month' ? '月度' : '周'}视图
+              </button>
+            )}
             {filters.selectedDate && (
               <button className="ghost-button" onClick={() => updateFilters({ selectedDate: null })}>取消日期选择</button>
             )}
           </div>
         </div>
         <ClearWaveChart
-          dayWidth={dayWidth}
-          series={clearSeries}
-          averageSeries={averageSeries}
+          granularity={chartGranularity}
+          series={chartSeries}
+          averageSeries={chartAverage}
           selectedDate={filters.selectedDate}
-          onSelectDate={(selectedDate) => updateFilters({ selectedDate })}
+          onSelectDate={handleBarClick}
         />
       </section>
 
-      <section className="split">
-        <div className="panel">
-          <h2>选中日期 Clear 详情</h2>
-          {filters.selectedDate ? (
-            <CaseTable cases={selectedCases} />
-          ) : (
-            <p className="muted">点击上方任意日期柱子查看当天 Clear 记录，列表会优先展示含 Note 的样本。</p>
-          )}
+      <section className="panel">
+        <div className="compact-heading">
+          <h2>样本明细</h2>
+          <Select label="状态" value={detailStatus} onChange={(value) => setDetailStatus(value as typeof detailStatus)}>
+            <option value="all">全部</option>
+            <option value="Clear">Clear</option>
+            <option value="Reject">Reject</option>
+          </Select>
         </div>
-        <RhythmPanel
-          status={currentStatus}
-          lowTideRuns={lowTideRuns}
-          threshold={lowTideThreshold}
-          onThresholdChange={(value) => setLowTideThreshold(parseLowTideThreshold(value))}
-        />
+        <p className="note-count muted">
+          {scopeLabel ? `${scopeLabel} · ` : ''}
+          共 {numberFormatter.format(detailView.total)} 条{detailView.total > DETAIL_CAP ? `，显示最新 ${DETAIL_CAP}` : ''}
+        </p>
+        <CaseTable cases={detailView.rows} />
       </section>
       <footer className="footer-note" aria-label="数据来源与外部工具">
         <span className="footer-title">数据来源与工具</span>
@@ -438,10 +439,29 @@ export default function App() {
     setFilters((current) => ({ ...current, ...update }));
   }
 
+  function handleBarClick(date: string) {
+    if (chartGranularity === 'day') {
+      updateFilters({ selectedDate: date });
+      return;
+    }
+    if (chartGranularity === 'month') {
+      const monthKey = date.slice(0, 7);
+      setChartFocus({ start: `${monthKey}-01`, end: `${monthKey}-31`, label: monthKey });
+      return;
+    }
+    setChartFocus({ start: date, end: addDaysISO(date, 6), label: `${date} 当周` });
+  }
+
   function navigate(path: string) {
     window.history.pushState({}, '', path);
     setRoute(path);
   }
+}
+
+function addDaysISO(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
 }
 
 function DonatePage({ onNavigateHome }: { onNavigateHome: () => void }) {
@@ -517,59 +537,6 @@ function LoadingSkeleton() {
   );
 }
 
-function RhythmPanel({
-  lowTideRuns,
-  onThresholdChange,
-  status,
-  threshold,
-}: {
-  lowTideRuns: ReturnType<typeof findLowTideRuns>;
-  onThresholdChange: (value: string) => void;
-  status: CurrentStatus;
-  threshold: LowTideThreshold;
-}) {
-  return (
-    <section className="panel rhythm-panel">
-      <div className="compact-heading">
-        <h2>近期节奏与低速区间</h2>
-        <Select label="阈值" value={String(threshold)} onChange={onThresholdChange}>
-          <option value="1">≤ 1 个/天</option>
-          <option value="2">≤ 2 个/天</option>
-          <option value="5">≤ 5 个/天</option>
-        </Select>
-      </div>
-      {status.currentLow ? (
-        <p className="rhythm-title">已连续低速 {status.currentLow.days} 天</p>
-      ) : (
-        <p className="rhythm-title">近期不在低速区</p>
-      )}
-      <div className="status-stats">
-        <span>近 7 天 Clear {status.clears7d} 个</span>
-        <span>近 14 天 Clear {status.clears14d} 个</span>
-        <span>近 30 天 Clear {status.clears30d} 个</span>
-      </div>
-      <p className="muted">连续 5 天及以上，每日 Clear 不超过 {threshold} 个。</p>
-      <LowTideList runs={lowTideRuns} />
-    </section>
-  );
-}
-
-function LowTideList({ runs }: { runs: ReturnType<typeof findLowTideRuns> }) {
-  if (runs.length === 0) {
-    return <p className="muted">当前筛选下没有明显低潮期。</p>;
-  }
-  return (
-    <div className="low-tide-list">
-      {runs.map((run) => (
-        <div className="low-tide" key={`${run.startDate}-${run.endDate}`}>
-          <strong>{run.startDate} 至 {run.endDate}</strong>
-          <span>{run.days} 天，合计 Clear {run.totalClears} 个</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function Select<T extends string>({
   children,
   disabled,
@@ -620,20 +587,20 @@ function BacklogRow({ backlog, totalPending }: { backlog: PendingBacklog[]; tota
           );
         })}
       </div>
-      <p className="backlog-note">已排除 check_date 超 1 年仍挂 Pending 的旧案(大概率已线下结案、未回 checkee 更新)。</p>
+      <p className="backlog-note">已排除 check_date 超 2 年依然 Pending 的 case</p>
     </section>
   );
 }
 
 function ClearWaveChart({
   averageSeries,
-  dayWidth,
+  granularity,
   onSelectDate,
   selectedDate,
   series,
 }: {
   averageSeries: { date: string; value: number }[];
-  dayWidth: number;
+  granularity: Granularity;
   onSelectDate: (date: string) => void;
   selectedDate: string | null;
   series: DailyClearPoint[];
@@ -643,10 +610,12 @@ function ClearWaveChart({
   const [visibleYear, setVisibleYear] = useState<string>(
     () => series[series.length - 1]?.date.slice(0, 4) ?? '',
   );
-  const [chartWrapHeight, setChartWrapHeight] = useState(0);
+  const [chartWrapWidth, setChartWrapWidth] = useState(0);
   const [wrapTopOffset, setWrapTopOffset] = useState(0);
 
-  const normalizedDayWidth = clamp(dayWidth, 3, 30);
+  const slotCount = Math.max(series.length, 1);
+  const availableWidth = chartWrapWidth - CHART_PADDING.left - CHART_PADDING.right;
+  const slotWidth = chartWrapWidth > 0 ? availableWidth / slotCount : 12;
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -656,8 +625,8 @@ function ClearWaveChart({
     if (stickToRight) {
       wrap.scrollLeft = wrap.scrollWidth - wrap.clientWidth;
     }
-    setVisibleYear(computeVisibleYear(wrap, normalizedDayWidth, series));
-  }, [normalizedDayWidth, series, stickToRight]);
+    setVisibleYear(computeVisibleYear(wrap, slotWidth, series));
+  }, [slotWidth, series, stickToRight]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -669,7 +638,7 @@ function ClearWaveChart({
       if (!entry) {
         return;
       }
-      setChartWrapHeight(entry.contentRect.height);
+      setChartWrapWidth(entry.contentRect.width);
       const style = window.getComputedStyle(wrap);
       setWrapTopOffset(
         (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0),
@@ -685,20 +654,19 @@ function ClearWaveChart({
 
   const height = 360;
   const padding = CHART_PADDING;
-  const slotCount = Math.max(series.length, 1);
-  const plotWidth = slotCount * normalizedDayWidth;
+  const plotWidth = slotCount * slotWidth;
   const svgWidth = plotWidth + padding.left + padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const maxCount = Math.max(
-    ...series.map((point) => point.count),
+    ...series.map((point) => point.count + point.rejectCount),
     ...averageSeries.map((point) => point.value),
     1,
   );
-  const barWidth = Math.max(1.5, normalizedDayWidth - 1.2);
-  const minLabelSpacingPx = Math.max(72, normalizedDayWidth * 7);
-  const historyTickIndexes = getDateTickIndexes(series.map((point) => point.date), normalizedDayWidth, minLabelSpacingPx);
+  const barWidth = Math.max(1.5, slotWidth - 1.2);
+  const minLabelSpacingPx = Math.max(72, slotWidth * 7);
+  const historyTickIndexes = getDateTickIndexes(series.map((point) => point.date), slotWidth, minLabelSpacingPx);
 
-  const xForHistoryIndex = (index: number) => padding.left + (index + 0.5) * normalizedDayWidth;
+  const xForHistoryIndex = (index: number) => padding.left + (index + 0.5) * slotWidth;
   const yForValue = (value: number) => padding.top + plotHeight - (value / maxCount) * plotHeight;
   const averagePath = smoothPath(averageSeries.map((point, index) => ({
     x: xForHistoryIndex(index),
@@ -706,19 +674,16 @@ function ClearWaveChart({
   })));
   const axisLabelCandidates: AxisLabel[] = historyTickIndexes.map((index) => ({
     key: `history-${series[index].date}`,
-    text: series[index].date.slice(5),
+    text: formatBucketAxis(series[index].date, granularity),
     x: xForHistoryIndex(index),
   }));
   const axisLabels = pickSpacedAxisLabels(axisLabelCandidates, minLabelSpacingPx);
   const yAxisRatios = [0, 0.25, 0.5, 0.75, 1];
-  const yAxisScale = chartWrapHeight > 0 ? chartWrapHeight / height : 0;
-  const yAxisLabels = yAxisScale > 0
-    ? yAxisRatios.map((ratio) => ({
-        ratio,
-        top: wrapTopOffset + (padding.top + plotHeight - ratio * plotHeight) * yAxisScale,
-        value: Math.round(maxCount * ratio),
-      }))
-    : [];
+  const yAxisLabels = yAxisRatios.map((ratio) => ({
+    ratio,
+    top: wrapTopOffset + (padding.top + plotHeight - ratio * plotHeight),
+    value: Math.round(maxCount * ratio),
+  }));
 
   return (
     <div className="chart-shell">
@@ -739,7 +704,7 @@ function ClearWaveChart({
           const target = event.currentTarget;
           const remain = target.scrollWidth - target.clientWidth - target.scrollLeft;
           setStickToRight(remain < 36);
-          const nextYear = computeVisibleYear(target, normalizedDayWidth, series);
+          const nextYear = computeVisibleYear(target, slotWidth, series);
           if (nextYear && nextYear !== visibleYear) {
             setVisibleYear(nextYear);
           }
@@ -763,26 +728,30 @@ function ClearWaveChart({
         })}
         {series.map((point, index) => {
           const x = xForHistoryIndex(index) - barWidth / 2;
-          const totalHeight = padding.top + plotHeight - yForValue(point.count);
-          const noteHeight = point.count === 0 ? 0 : totalHeight * (point.noteCount / point.count);
+          const baseline = padding.top + plotHeight;
+          const clearTop = yForValue(point.count);
+          const stackTop = yForValue(point.count + point.rejectCount);
+          const rejectText = point.rejectCount > 0 ? `, Reject ${point.rejectCount}` : '';
           return (
             <g key={point.date}>
-              <title>{`${point.date}: Clear ${point.count}, 有 Note ${point.noteCount}`}</title>
-              <rect
-                className={point.date === selectedDate ? 'bar selected' : 'bar'}
-                x={x}
-                y={yForValue(point.count)}
-                width={barWidth}
-                height={totalHeight}
-                onClick={() => onSelectDate(point.date)}
-              />
-              {noteHeight > 0 && (
+              <title>{`${formatBucketTooltip(point.date, granularity)}: Clear ${point.count}${rejectText}`}</title>
+              {point.count > 0 && (
                 <rect
-                  className="bar-note"
+                  className={point.date === selectedDate ? 'bar selected' : 'bar'}
                   x={x}
-                  y={padding.top + plotHeight - noteHeight}
+                  y={clearTop}
                   width={barWidth}
-                  height={noteHeight}
+                  height={baseline - clearTop}
+                  onClick={() => onSelectDate(point.date)}
+                />
+              )}
+              {point.rejectCount > 0 && (
+                <rect
+                  className="bar-reject"
+                  x={x}
+                  y={stackTop}
+                  width={barWidth}
+                  height={clearTop - stackTop}
                   onClick={() => onSelectDate(point.date)}
                 />
               )}
@@ -809,7 +778,7 @@ function ClearWaveChart({
 
 function CaseTable({ cases }: { cases: CaseRecord[] }) {
   if (cases.length === 0) {
-    return <p className="muted">这一天在当前筛选条件下没有 Clear case。</p>;
+    return <p className="muted">当前筛选条件下没有匹配的样本。</p>;
   }
   return (
     <div className="table-wrap">
@@ -819,6 +788,7 @@ function CaseTable({ cases }: { cases: CaseRecord[] }) {
             <th>Case</th>
             <th>签证</th>
             <th>领馆</th>
+            <th>状态</th>
             <th>Check</th>
             <th>Clear</th>
             <th>等待</th>
@@ -831,8 +801,9 @@ function CaseTable({ cases }: { cases: CaseRecord[] }) {
               <td><a href={record.detail_url} target="_blank" rel="noreferrer">{record.case_number}</a></td>
               <td>{record.visa_type}</td>
               <td>{record.consulate} / {getRegionGroup(record.consulate) === 'mainland' ? '大陆' : '海外'}</td>
+              <td><span className={`status-tag status-${record.status}`}>{record.status}</span></td>
               <td>{record.check_date}</td>
-              <td>{record.complete_date}</td>
+              <td>{record.complete_date ?? '-'}</td>
               <td>{record.waiting_days ?? '-'} 天</td>
               <td className="note-cell">{record.detail.Note || '无'}</td>
             </tr>
@@ -884,22 +855,25 @@ function percentile(values: number[], ratio: number): number {
   return values[Math.min(values.length - 1, Math.floor((values.length - 1) * ratio))];
 }
 
-function getZoomLabel(dayWidth: number): string {
-  if (dayWidth >= 14) {
-    return '放大';
+function formatBucketAxis(date: string, granularity: Granularity): string {
+  if (granularity === 'month') {
+    return date.slice(0, 7);
   }
-  if (dayWidth <= 6) {
-    return '紧凑';
+  return date.slice(5);
+}
+
+function formatBucketTooltip(date: string, granularity: Granularity): string {
+  if (granularity === 'month') {
+    return date.slice(0, 7);
   }
-  return '标准';
+  if (granularity === 'week') {
+    return `${date} 起一周`;
+  }
+  return date;
 }
 
 function parseTimeRange(value: string): TimeRangeDays {
   return TIME_RANGE_MAP[value] ?? 'all';
-}
-
-function parseLowTideThreshold(value: string): LowTideThreshold {
-  return LOW_TIDE_THRESHOLD_MAP[value] ?? 1;
 }
 
 function getDefaultVisaSubtype(visaGroup: VisaGroup): VisaSubtype {
@@ -985,10 +959,6 @@ function pickSpacedAxisLabels(labels: AxisLabel[], minSpacingPx: number): AxisLa
   return selected;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 function formatGeneratedAt(iso: string): string {
   if (!iso) {
     return '';
@@ -1008,14 +978,14 @@ function formatGeneratedAt(iso: string): string {
 
 function computeVisibleYear(
   wrap: HTMLDivElement,
-  dayWidth: number,
+  slotWidth: number,
   series: DailyClearPoint[],
 ): string {
   if (series.length === 0) {
     return '';
   }
   const centerX = wrap.scrollLeft + wrap.clientWidth / 2;
-  const slot = Math.floor((centerX - CHART_PADDING.left) / dayWidth);
+  const slot = Math.floor((centerX - CHART_PADDING.left) / slotWidth);
   const clampedSlot = Math.max(0, Math.min(series.length - 1, slot));
   return series[clampedSlot].date.slice(0, 4);
 }

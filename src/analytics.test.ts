@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildCurrentStatus,
+  bucketClearSeries,
   buildDailyClearSeries,
   buildPendingBacklog,
   filterCases,
-  findLowTideRuns,
   getCheckDepth,
   getDateTickIndexes,
   getRegionGroup,
+  granularityForRange,
   getVisaGroup,
   getVisaSubtype,
   movingAverage,
@@ -94,17 +94,18 @@ describe('pending backlog', () => {
     ]);
   });
 
-  it('excludes stale Pending cases waiting beyond a year (presumed resolved offline)', () => {
+  it('excludes stale Pending cases waiting beyond two years (presumed resolved offline)', () => {
     const cases = [
       makeCase({ status: 'Pending', waiting_days: 300 }),
-      makeCase({ status: 'Pending', waiting_days: 365 }),
-      makeCase({ status: 'Pending', waiting_days: 366 }),
+      makeCase({ status: 'Pending', waiting_days: 700 }),
+      makeCase({ status: 'Pending', waiting_days: 730 }),
+      makeCase({ status: 'Pending', waiting_days: 731 }),
       makeCase({ status: 'Pending', waiting_days: 1200 }),
     ];
     expect(buildPendingBacklog(cases)).toEqual([
-      { threshold: 90, count: 2 },
-      { threshold: 180, count: 2 },
-      { threshold: 270, count: 2 },
+      { threshold: 90, count: 3 },
+      { threshold: 180, count: 3 },
+      { threshold: 270, count: 3 },
     ]);
   });
 });
@@ -149,16 +150,17 @@ describe('filtering and daily clear series', () => {
     }).map((item) => item.case_number)).toEqual(['f']);
   });
 
-  it('builds daily clear counts and note counts', () => {
+  it('builds daily clear and reject counts by completion date', () => {
     const series = buildDailyClearSeries([
       ...cases,
       makeCase({ case_number: '5', complete_date: '2026-01-12', visa_type: 'H1', waiting_days: 40 }),
+      makeCase({ case_number: '6', complete_date: '2026-01-11', status: 'Reject', waiting_days: 50 }),
     ]);
 
     expect(series).toEqual([
-      { date: '2026-01-10', count: 2, noteCount: 1 },
-      { date: '2026-01-11', count: 1, noteCount: 1 },
-      { date: '2026-01-12', count: 1, noteCount: 0 },
+      { date: '2026-01-10', count: 2, rejectCount: 0 },
+      { date: '2026-01-11', count: 1, rejectCount: 1 },
+      { date: '2026-01-12', count: 1, rejectCount: 0 },
     ]);
   });
 
@@ -169,44 +171,11 @@ describe('filtering and daily clear series', () => {
     ]);
 
     expect(series).toEqual([
-      { date: '2026-01-10', count: 1, noteCount: 0 },
-      { date: '2026-01-11', count: 0, noteCount: 0 },
-      { date: '2026-01-12', count: 0, noteCount: 0 },
-      { date: '2026-01-13', count: 1, noteCount: 0 },
+      { date: '2026-01-10', count: 1, rejectCount: 0 },
+      { date: '2026-01-11', count: 0, rejectCount: 0 },
+      { date: '2026-01-12', count: 0, rejectCount: 0 },
+      { date: '2026-01-13', count: 1, rejectCount: 0 },
     ]);
-  });
-
-  it('finds low tide runs across consecutive low-count days', () => {
-    const runs = findLowTideRuns(
-      [
-        { date: '2026-01-01', count: 2, noteCount: 0 },
-        { date: '2026-01-02', count: 1, noteCount: 0 },
-        { date: '2026-01-03', count: 0, noteCount: 0 },
-        { date: '2026-01-04', count: 1, noteCount: 0 },
-        { date: '2026-01-05', count: 3, noteCount: 0 },
-      ],
-      1,
-      3,
-    );
-
-    expect(runs).toEqual([{ startDate: '2026-01-02', endDate: '2026-01-04', days: 3, totalClears: 2 }]);
-  });
-
-  it('builds current status from latest low tide and recent windows', () => {
-    const status = buildCurrentStatus(
-      [
-        { date: '2026-01-01', count: 8, noteCount: 0 },
-        { date: '2026-01-02', count: 1, noteCount: 0 },
-        { date: '2026-01-03', count: 0, noteCount: 0 },
-        { date: '2026-01-04', count: 1, noteCount: 0 },
-      ],
-      1,
-      3,
-    );
-
-    expect(status.currentLow).toEqual({ startDate: '2026-01-02', endDate: '2026-01-04', days: 3, totalClears: 2 });
-    expect(status.clears7d).toBe(10);
-    expect(status.latestDate).toBe('2026-01-04');
   });
 
   it('chooses date tick indexes by pixel spacing', () => {
@@ -217,15 +186,58 @@ describe('filtering and daily clear series', () => {
 
   it('computes trailing moving averages', () => {
     const series = [
-      { date: '2026-01-01', count: 1, noteCount: 0 },
-      { date: '2026-01-02', count: 3, noteCount: 1 },
-      { date: '2026-01-03', count: 5, noteCount: 2 },
+      { date: '2026-01-01', count: 1, rejectCount: 0 },
+      { date: '2026-01-02', count: 3, rejectCount: 1 },
+      { date: '2026-01-03', count: 5, rejectCount: 2 },
     ];
 
     expect(movingAverage(series, 2)).toEqual([
       { date: '2026-01-01', value: 1 },
       { date: '2026-01-02', value: 2 },
       { date: '2026-01-03', value: 4 },
+    ]);
+  });
+});
+
+describe('chart granularity', () => {
+  it('maps the time range to a display granularity', () => {
+    expect(granularityForRange('all')).toBe('month');
+    expect(granularityForRange(730)).toBe('week');
+    expect(granularityForRange(365)).toBe('week');
+    expect(granularityForRange(180)).toBe('day');
+    expect(granularityForRange(90)).toBe('day');
+  });
+
+  it('returns the daily series unchanged at day granularity', () => {
+    const daily = [
+      { date: '2026-01-01', count: 2, rejectCount: 1 },
+      { date: '2026-01-02', count: 0, rejectCount: 0 },
+    ];
+    expect(bucketClearSeries(daily, 'day')).toBe(daily);
+  });
+
+  it('sums daily points into calendar-month buckets', () => {
+    const daily = [
+      { date: '2026-01-05', count: 2, rejectCount: 1 },
+      { date: '2026-01-20', count: 3, rejectCount: 0 },
+      { date: '2026-02-02', count: 4, rejectCount: 2 },
+    ];
+    expect(bucketClearSeries(daily, 'month')).toEqual([
+      { date: '2026-01-01', count: 5, rejectCount: 1 },
+      { date: '2026-02-01', count: 4, rejectCount: 2 },
+    ]);
+  });
+
+  it('sums daily points into Monday-anchored week buckets', () => {
+    // 2026-01-05 is a Monday; 2026-01-11 Sunday; 2026-01-12 next Monday.
+    const daily = [
+      { date: '2026-01-07', count: 1, rejectCount: 0 },
+      { date: '2026-01-11', count: 2, rejectCount: 1 },
+      { date: '2026-01-12', count: 5, rejectCount: 0 },
+    ];
+    expect(bucketClearSeries(daily, 'week')).toEqual([
+      { date: '2026-01-05', count: 3, rejectCount: 1 },
+      { date: '2026-01-12', count: 5, rejectCount: 0 },
     ]);
   });
 });

@@ -20,8 +20,8 @@ export type CheckDepth = 'all' | 'gte7' | 'gte30' | 'gte60' | 'gte90' | 'gte180'
 export type CheckDepthBucket = 'lt7' | Exclude<CheckDepth, 'all'>;
 export type NoteCohort = 'all' | 'withNote' | 'withoutNote';
 export type RegionFilter = 'all' | 'mainland' | 'overseas' | (string & {});
-export type TimeRangeDays = 'all' | 30 | 60 | 90 | 180;
-export type LowTideThreshold = 1 | 2 | 5;
+export type TimeRangeDays = 'all' | 90 | 180 | 365 | 730;
+export type Granularity = 'day' | 'week' | 'month';
 
 export interface Filters {
   checkDepth: CheckDepth;
@@ -36,27 +36,12 @@ export interface Filters {
 export interface DailyClearPoint {
   date: string;
   count: number;
-  noteCount: number;
+  rejectCount: number;
 }
 
 export interface MovingAveragePoint {
   date: string;
   value: number;
-}
-
-export interface LowTideRun {
-  startDate: string;
-  endDate: string;
-  days: number;
-  totalClears: number;
-}
-
-export interface CurrentStatus {
-  latestDate: string;
-  currentLow: LowTideRun | null;
-  clears7d: number;
-  clears14d: number;
-  clears30d: number;
 }
 
 export interface PendingBacklog {

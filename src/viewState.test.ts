@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
-import type { Filters, LowTideThreshold } from './types';
+import type { Filters } from './types';
 
 const DEFAULT_FILTERS: Filters = {
   checkDepth: 'gte60',
@@ -13,14 +13,11 @@ const DEFAULT_FILTERS: Filters = {
   visaSubtype: 'all',
 };
 
-const DEFAULT_LOW_TIDE_THRESHOLD: LowTideThreshold = 5;
-
 describe('view state URL parsing', () => {
-  it('reads valid query params into filters and threshold', () => {
+  it('reads valid query params into filters', () => {
     const result = readViewStateFromSearch(
-      '?vg=work&vs=h&d=gte90&n=withNote&r=Tokyo&t=60&s=2026-04-30&lt=2',
+      '?vg=work&vs=h&d=gte90&n=withNote&r=Tokyo&t=180&s=2026-04-30',
       DEFAULT_FILTERS,
-      DEFAULT_LOW_TIDE_THRESHOLD,
     );
 
     expect(result).toEqual({
@@ -29,19 +26,17 @@ describe('view state URL parsing', () => {
         noteCohort: 'withNote',
         region: 'Tokyo',
         selectedDate: '2026-04-30',
-        timeRangeDays: 60,
+        timeRangeDays: 180,
         visaGroup: 'work',
         visaSubtype: 'h',
       },
-      lowTideThreshold: 2,
     });
   });
 
   it('falls back to defaults for invalid values', () => {
     const result = readViewStateFromSearch(
-      '?vg=b&vs=h&d=invalid&n=whatever&r=&t=999&s=not-a-date&lt=9',
+      '?vg=b&vs=h&d=invalid&n=whatever&r=&t=999&s=not-a-date',
       DEFAULT_FILTERS,
-      DEFAULT_LOW_TIDE_THRESHOLD,
     );
 
     expect(result).toEqual({
@@ -50,7 +45,6 @@ describe('view state URL parsing', () => {
         visaGroup: 'b',
         visaSubtype: 'all',
       },
-      lowTideThreshold: DEFAULT_LOW_TIDE_THRESHOLD,
     });
   });
 });
@@ -65,12 +59,10 @@ describe('view state URL serialization', () => {
         region: 'Hong Kong',
         selectedDate: '2026-04-30',
       },
-      1,
       DEFAULT_FILTERS,
-      DEFAULT_LOW_TIDE_THRESHOLD,
     );
 
-    expect(search).toBe('vg=student&vs=f&r=Hong+Kong&s=2026-04-30&lt=1');
+    expect(search).toBe('vg=student&vs=f&r=Hong+Kong&s=2026-04-30');
   });
 
   it('round-trips serialized filters', () => {
@@ -80,16 +72,14 @@ describe('view state URL serialization', () => {
         checkDepth: 'gte30',
         noteCohort: 'withoutNote',
         region: 'Toronto',
-        timeRangeDays: 180,
+        timeRangeDays: 365,
         visaGroup: 'work',
         visaSubtype: 'o',
       },
-      2,
       DEFAULT_FILTERS,
-      DEFAULT_LOW_TIDE_THRESHOLD,
     );
 
-    const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS, DEFAULT_LOW_TIDE_THRESHOLD);
+    const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS);
 
     expect(parsed).toEqual({
       filters: {
@@ -97,11 +87,10 @@ describe('view state URL serialization', () => {
         checkDepth: 'gte30',
         noteCohort: 'withoutNote',
         region: 'Toronto',
-        timeRangeDays: 180,
+        timeRangeDays: 365,
         visaGroup: 'work',
         visaSubtype: 'o',
       },
-      lowTideThreshold: 2,
     });
   });
 });

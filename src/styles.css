@@ -25,11 +25,11 @@
   --chip-text: #374151;
   --skeleton-base: #e5e7eb;
   --skeleton-glow: #f3f4f6;
-  --chart-bar: #93c5fd;
-  --chart-bar-hover: #60a5fa;
-  --chart-bar-selected: #1e40af;
-  --chart-bar-note: #2563eb;
-  --chart-avg-line: #ea580c;
+  --chart-bar: #10b981;
+  --chart-bar-hover: #059669;
+  --chart-bar-selected: #047857;
+  --chart-bar-reject: #f43f5e;
+  --chart-avg-line: #475569;
   color: var(--text-primary);
   background: var(--bg-page);
 }
@@ -59,11 +59,11 @@
   --chip-text: #e5e7eb;
   --skeleton-base: #262626;
   --skeleton-glow: #404040;
-  --chart-bar: #3b82f6;
-  --chart-bar-hover: #60a5fa;
-  --chart-bar-selected: #93c5fd;
-  --chart-bar-note: #60a5fa;
-  --chart-avg-line: #fb923c;
+  --chart-bar: #34d399;
+  --chart-bar-hover: #6ee7b7;
+  --chart-bar-selected: #a7f3d0;
+  --chart-bar-reject: #fb7185;
+  --chart-avg-line: #cbd5e1;
 }
 
 * {
@@ -581,10 +581,76 @@ h2 {
   fill: var(--chart-bar-selected);
 }
 
-.bar-note {
-  fill: var(--chart-bar-note);
+.bar-reject {
+  fill: var(--chart-bar-reject);
   cursor: pointer;
   transition: fill 140ms ease;
+}
+
+.chart-titleline {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.chart-legend {
+  display: inline-flex;
+  gap: 14px;
+}
+
+.chart-legend .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.chart-legend .lg::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.lg-clear::before {
+  background: var(--chart-bar);
+}
+
+.lg-reject::before {
+  background: var(--chart-bar-reject);
+}
+
+.status-tag {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-Clear {
+  color: #059669;
+}
+
+.status-Pending {
+  color: #c2410c;
+}
+
+.status-Reject {
+  color: #e11d48;
+}
+
+:root[data-theme="dark"] .status-Clear {
+  color: #34d399;
+}
+
+:root[data-theme="dark"] .status-Pending {
+  color: #fbbf24;
+}
+
+:root[data-theme="dark"] .status-Reject {
+  color: #fb7185;
 }
 
 .avg-line {
@@ -714,9 +780,16 @@ code {
 }
 
 .table-wrap {
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 520px;
   border: 1px solid var(--border);
   border-radius: 14px;
+}
+
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 table {
@@ -745,6 +818,7 @@ th {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
+  background: var(--surface-elevated);
 }
 
 a {
