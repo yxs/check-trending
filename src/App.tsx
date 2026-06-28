@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import {
@@ -24,7 +24,10 @@ import type {
   VisaSubtype,
   WebData,
 } from './types';
-import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL } from './site';
+import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL, NOTES_PATH } from './site';
+
+// Code-split: the /notes page (and its search helpers) load only when visited.
+const NotesPage = lazy(() => import('./NotesPage'));
 import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePreference } from './theme';
 import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
 
@@ -157,7 +160,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (route === DONATE_PATH) {
+    if (route === DONATE_PATH || route === NOTES_PATH) {
       return;
     }
     const search = buildSearchFromViewState(
@@ -226,6 +229,17 @@ export default function App() {
     return <DonatePage onNavigateHome={() => navigate('/')} />;
   }
 
+  if (route === NOTES_PATH) {
+    return (
+      <Suspense fallback={<main className="page"><p className="muted">正在加载 Note 搜索…</p></main>}>
+        <NotesPage
+          onNavigateHome={() => navigate('/')}
+          themeControl={<ThemeSwitch preference={themePreference} onChange={setThemePreference} />}
+        />
+      </Suspense>
+    );
+  }
+
   if (error) {
     return <main className="page"><p className="error">{error}</p></main>;
   }
@@ -252,14 +266,36 @@ export default function App() {
             <a href={DONATE_PATH} onClick={(event) => {
               event.preventDefault();
               navigate(DONATE_PATH);
-            }}>Donate</a>
+            }}>支持</a>
             <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
           </nav>
         </div>
-        <div className="freshness">
-          <span>数据范围</span>
-          <strong>{data.summary.start_date} 至 {data.summary.end_date}</strong>
-          <span>更新于 {formatGeneratedAt(data.summary.generated_at)}</span>
+        <div className="hero-aside">
+          <div className="freshness">
+            <span>数据范围</span>
+            <strong>{data.summary.start_date} 至 {data.summary.end_date}</strong>
+            <span>更新于 {formatGeneratedAt(data.summary.generated_at)}</span>
+          </div>
+          <a
+            className="notes-cta"
+            href={NOTES_PATH}
+            onClick={(event) => {
+              event.preventDefault();
+              navigate(NOTES_PATH);
+            }}
+          >
+            <span className="notes-cta-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <circle cx="11" cy="11" r="7" />
+                <line x1="20.5" y1="20.5" x2="16.5" y2="16.5" />
+              </svg>
+            </span>
+            <span className="notes-cta-text">
+              <strong>Note 全文搜索</strong>
+              <span>搜 2017 年至今的案例 Note</span>
+            </span>
+            <span className="notes-cta-arrow" aria-hidden="true">›</span>
+          </a>
         </div>
       </header>
 

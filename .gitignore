@@ -9,3 +9,6 @@ __pycache__/
 *.log
 .playwright-mcp/
 data/checkee/last_run_summary.json
+
+# browser-harvested raw monthly listings (regenerated, not committed)
+_harvest_*.json

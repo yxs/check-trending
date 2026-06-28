@@ -1023,3 +1023,231 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- Note 全文搜索 ---- */
+.notes-page {
+  max-width: 960px;
+}
+
+.note-search {
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.note-search-input {
+  width: 100%;
+  min-height: 46px;
+  padding: 12px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.note-search-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.note-filters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.note-count {
+  margin: 0 4px 14px;
+}
+
+.note-results {
+  display: grid;
+  gap: 12px;
+}
+
+.note-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.note-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.note-case {
+  font-weight: 700;
+  color: var(--text-accent);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-case:hover {
+  color: var(--text-accent-strong);
+}
+
+.note-meta {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.note-status {
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--chip-bg);
+  color: var(--chip-text);
+}
+
+.note-status-clear {
+  background: rgba(34, 197, 94, 0.16);
+  color: #15803d;
+}
+
+.note-status-pending {
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+}
+
+.note-status-reject {
+  background: rgba(239, 68, 68, 0.16);
+  color: #b91c1c;
+}
+
+.note-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.note-body mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: rgba(37, 99, 235, 0.22);
+  color: inherit;
+}
+
+:root[data-theme="dark"] .note-status-clear {
+  background: rgba(34, 197, 94, 0.22);
+  color: #4ade80;
+}
+
+:root[data-theme="dark"] .note-status-pending {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+:root[data-theme="dark"] .note-status-reject {
+  background: rgba(239, 68, 68, 0.24);
+  color: #f87171;
+}
+
+:root[data-theme="dark"] .note-body mark {
+  background: rgba(96, 165, 250, 0.3);
+}
+
+@media (max-width: 640px) {
+  .note-search {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .note-filters {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .note-card {
+    padding: 12px 13px;
+  }
+}
+
+/* ---- 右侧资讯列 + Note 搜索入口 ---- */
+.hero-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 240px;
+  align-self: flex-start;
+}
+
+.hero-aside .freshness {
+  min-width: 0;
+}
+
+.notes-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  text-decoration: none;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.28);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.notes-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 9px 22px rgba(37, 99, 235, 0.36);
+}
+
+.notes-cta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+}
+
+.notes-cta-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.notes-cta-text strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.notes-cta-text span {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.notes-cta-arrow {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 22px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+@media (max-width: 920px) {
+  .hero-aside {
+    min-width: 0;
+    margin-top: 12px;
+  }
+}
