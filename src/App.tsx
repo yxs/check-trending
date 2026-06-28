@@ -615,7 +615,10 @@ function ClearWaveChart({
 
   const slotCount = Math.max(series.length, 1);
   const availableWidth = chartWrapWidth - CHART_PADDING.left - CHART_PADDING.right;
-  const slotWidth = chartWrapWidth > 0 ? availableWidth / slotCount : 12;
+  // Fill the container when bars stay legible; below a per-bar floor, keep them
+  // tappable and let the chart scroll horizontally (the floor is larger on phones).
+  const minSlot = chartWrapWidth > 0 && chartWrapWidth < 560 ? 18 : 12;
+  const slotWidth = chartWrapWidth > 0 ? Math.max(minSlot, availableWidth / slotCount) : 12;
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -735,6 +738,14 @@ function ClearWaveChart({
           return (
             <g key={point.date}>
               <title>{`${formatBucketTooltip(point.date, granularity)}: Clear ${point.count}${rejectText}`}</title>
+              <rect
+                className="bar-hit"
+                x={xForHistoryIndex(index) - slotWidth / 2}
+                y={padding.top}
+                width={slotWidth}
+                height={plotHeight}
+                onClick={() => onSelectDate(point.date)}
+              />
               {point.count > 0 && (
                 <rect
                   className={point.date === selectedDate ? 'bar selected' : 'bar'}
