@@ -3,23 +3,26 @@ import type { ReactNode } from 'react';
 
 import {
   bucketClearSeries,
+  buildClearWaitScatter,
   buildDailyClearSeries,
-  buildPendingBacklog,
+  CLEAR_SCATTER_MAX_DAYS,
   filterCases,
   getDateTickIndexes,
   getRegionGroup,
   granularityForRange,
-  hasNote,
   isStalePending,
+  LONG_CHECK_PENDING_MAX_DAYS,
   movingAverage,
   trailingWindowForGranularity,
 } from './analytics';
 import type {
   CaseRecord,
+  ClearWaitScatter,
   DailyClearPoint,
+  DetailSort,
+  DetailStatus,
   Filters,
   Granularity,
-  PendingBacklog,
   TimeRangeDays,
   VisaGroup,
   VisaSubtype,
@@ -30,16 +33,16 @@ import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL, NOTES_PATH } from './site';
 const NotesPage = lazy(() => import('./NotesPage'));
 import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePreference } from './theme';
 import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
+import { detailUrl } from './notes';
 
 const DEFAULT_FILTERS: Filters = {
-  checkDepth: 'all',
-  noteCohort: 'all',
   region: 'all',
   selectedDate: null,
   timeRangeDays: 'all',
   visaGroup: 'all',
   visaSubtype: 'all',
 };
+
 const numberFormatter = new Intl.NumberFormat('zh-CN');
 const TIME_RANGE_MAP: Record<string, TimeRangeDays> = {
   all: 'all',
@@ -73,11 +76,15 @@ export default function App() {
     [],
   );
   const [data, setData] = useState<WebData | null>(null);
+  const [caseNotes, setCaseNotes] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pageviewsTotal, setPageviewsTotal] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(initialViewState.filters);
   const [chartFocus, setChartFocus] = useState<{ start: string; end: string; label: string } | null>(null);
-  const [detailStatus, setDetailStatus] = useState<'all' | 'Clear' | 'Reject'>('all');
+  const [detailStatus, setDetailStatus] = useState<DetailStatus>(initialViewState.detailStatus);
+  const [detailSort, setDetailSort] = useState<DetailSort>(initialViewState.detailSort);
+  const detailRef = useRef<HTMLElement | null>(null);
+  const notesRequested = useRef(false);
   const [mobileFiltersExpanded, setMobileFiltersExpanded] = useState(false);
   const [route, setRoute] = useState(window.location.pathname);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
@@ -104,6 +111,31 @@ export default function App() {
         setError(caught instanceof Error ? caught.message : '加载数据失败');
       });
   }, []);
+
+  // Case Note text is ~80% of the data and only shown in the sample table, so it ships
+  // separately and loads lazily when the table nears the viewport (most visitors never
+  // scroll there). detail_url is reconstructed from case_number, so it isn't shipped either.
+  useEffect(() => {
+    const el = detailRef.current;
+    if (!el || notesRequested.current) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!notesRequested.current && entries.some((entry) => entry.isIntersecting)) {
+          notesRequested.current = true;
+          observer.disconnect();
+          fetch('/data/case-notes.json')
+            .then((response) => (response.ok ? response.json() : {}))
+            .then((map) => setCaseNotes(map as Record<string, string>))
+            .catch(() => setCaseNotes({}));
+        }
+      },
+      { rootMargin: '300px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [data]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -141,6 +173,8 @@ export default function App() {
       setRoute(window.location.pathname);
       const nextState = readViewStateFromSearch(window.location.search, DEFAULT_FILTERS);
       setFilters(nextState.filters);
+      setDetailStatus(nextState.detailStatus);
+      setDetailSort(nextState.detailSort);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -150,25 +184,28 @@ export default function App() {
     if (route === DONATE_PATH || route === NOTES_PATH) {
       return;
     }
-    const search = buildSearchFromViewState(filters, DEFAULT_FILTERS);
+    const search = buildSearchFromViewState(filters, DEFAULT_FILTERS, detailStatus, detailSort);
     const path = window.location.pathname;
     const nextUrl = search ? `${path}?${search}` : path;
     const currentUrl = `${path}${window.location.search}`;
     if (currentUrl !== nextUrl) {
       window.history.replaceState({}, '', nextUrl);
     }
-  }, [filters, route]);
+  }, [filters, route, detailStatus, detailSort]);
 
-  const consulates = useMemo(() => {
-    if (!data) {
-      return [];
-    }
-    return [...new Set(data.cases.map((record) => record.consulate))].sort((left, right) =>
-      left.localeCompare(right),
-    );
-  }, [data]);
+  // Drop cases still Pending past 2 years everywhere — they are resolved-offline/abandoned, not real backlog.
+  const cases = useMemo(() => (data ? data.cases.filter((record) => !isStalePending(record)) : []), [data]);
 
-  const filteredCases = useMemo(() => (data ? filterCases(data.cases, filters) : []), [data, filters]);
+  const consulates = useMemo(
+    () => [...new Set(cases.map((record) => record.consulate))].sort((left, right) => left.localeCompare(right)),
+    [cases],
+  );
+
+  const filteredCases = useMemo(() => filterCases(cases, filters), [cases, filters]);
+  const backlogBase = useMemo(
+    () => filterCases(cases, { ...filters, timeRangeDays: 'all' }),
+    [cases, filters],
+  );
   const clearSeries = useMemo(() => buildDailyClearSeries(filteredCases), [filteredCases]);
   const baseGranularity = granularityForRange(filters.timeRangeDays);
   const chartGranularity: Granularity = chartFocus ? 'day' : baseGranularity;
@@ -183,34 +220,53 @@ export default function App() {
     [chartSeries, chartGranularity],
   );
   const detailView = useMemo(() => {
-    let list = filteredCases.filter(
-      (record) => record.status === 'Clear' || record.status === 'Reject',
-    );
-    if (detailStatus !== 'all') {
-      list = list.filter((record) => record.status === detailStatus);
+    let list: CaseRecord[];
+    if (detailStatus === 'over1y') {
+      list = clearedWaitInRange(backlogBase, LONG_CHECK_PENDING_MAX_DAYS, Infinity);
+    } else if (detailStatus === 'over180') {
+      list = clearedWaitInRange(backlogBase, CLEAR_SCATTER_MAX_DAYS, LONG_CHECK_PENDING_MAX_DAYS);
+    } else {
+      list = filteredCases;
+      if (detailStatus !== 'all') {
+        list = list.filter((record) => record.status === detailStatus);
+      }
+      if (filters.selectedDate) {
+        list = list.filter((record) => record.complete_date === filters.selectedDate);
+      } else if (chartFocus) {
+        list = list.filter(
+          (record) =>
+            record.complete_date != null &&
+            record.complete_date >= chartFocus.start &&
+            record.complete_date <= chartFocus.end,
+        );
+      }
     }
-    if (filters.selectedDate) {
-      list = list.filter((record) => record.complete_date === filters.selectedDate);
-    } else if (chartFocus) {
-      list = list.filter(
-        (record) =>
-          record.complete_date != null &&
-          record.complete_date >= chartFocus.start &&
-          record.complete_date <= chartFocus.end,
-      );
-    }
-    const sorted = [...list].sort((left, right) =>
-      (right.complete_date ?? '').localeCompare(left.complete_date ?? ''),
-    );
+    const dir = detailSort.dir === 'asc' ? 1 : -1;
+    const sorted = [...list].sort((left, right) => {
+      if (detailSort.key === 'wait') {
+        return ((left.waiting_days ?? -1) - (right.waiting_days ?? -1)) * dir;
+      }
+      const leftValue = detailSort.key === 'check' ? left.check_date : left.complete_date ?? '';
+      const rightValue = detailSort.key === 'check' ? right.check_date : right.complete_date ?? '';
+      return leftValue.localeCompare(rightValue) * dir;
+    });
     return { total: sorted.length, rows: sorted.slice(0, DETAIL_CAP) };
-  }, [filteredCases, detailStatus, filters.selectedDate, chartFocus]);
+  }, [filteredCases, backlogBase, detailStatus, filters.selectedDate, chartFocus, detailSort]);
   const scopeLabel = filters.selectedDate
     ? `完成于 ${filters.selectedDate}`
     : chartFocus
       ? chartFocus.label
       : '';
   const metrics = useMemo(() => buildMetrics(filteredCases), [filteredCases]);
-  const pendingBacklog = useMemo(() => buildPendingBacklog(filteredCases), [filteredCases]);
+  const clearScatter = useMemo(() => buildClearWaitScatter(filteredCases), [filteredCases]);
+  const over1yClearedCount = useMemo(
+    () => clearedWaitInRange(backlogBase, LONG_CHECK_PENDING_MAX_DAYS, Infinity).length,
+    [backlogBase],
+  );
+  const over180ClearedCount = useMemo(
+    () => clearedWaitInRange(backlogBase, CLEAR_SCATTER_MAX_DAYS, LONG_CHECK_PENDING_MAX_DAYS).length,
+    [backlogBase],
+  );
   const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters]);
   const mobileFilterLabel = useMemo(() => {
     if (mobileFiltersExpanded) {
@@ -260,7 +316,7 @@ export default function App() {
           <p className="eyebrow">Check Trending</p>
           <h1>签证 Check 出签趋势</h1>
           <p className="lede">
-            基于 Checkee 公开样本，观察 Clear 出签节奏与等待时长变化。
+            基于 Checkee 样本，提供 <span className="lede-cap">Note搜索</span> / <span className="lede-cap">出签停滞与否</span> / <span className="lede-cap">180 天内的 Clear 出签时长分布</span> 能力
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
@@ -319,27 +375,13 @@ export default function App() {
         <Select label="签证组" value={filters.visaGroup} onChange={(visaGroup) => updateFilters({ visaGroup, visaSubtype: getDefaultVisaSubtype(visaGroup) })}>
           <option value="all">全部</option>
           <option value="work">工作签 H/L/O</option>
-          <option value="student">学生/学者 F/J</option>
-          <option value="b">B 签 B1/B2</option>
+          <option value="student">学生学者 F/J</option>
+          <option value="b">B1/B2</option>
         </Select>
         <Select label="签证细分" value={filters.visaSubtype} disabled={filters.visaGroup === 'all' || filters.visaGroup === 'b'} onChange={(visaSubtype) => updateFilters({ visaSubtype })}>
           {getVisaSubtypeOptions(filters.visaGroup).map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
-        </Select>
-        <Select label="等待时长" value={filters.checkDepth} onChange={(checkDepth) => updateFilters({ checkDepth })}>
-          <option value="all">全部</option>
-          <option value="gte7">7 天及以上</option>
-          <option value="gte30">30 天及以上</option>
-          <option value="gte60">60 天及以上</option>
-          <option value="gte90">90 天及以上</option>
-          <option value="gte180">180 天及以上</option>
-          <option value="gte270">270 天及以上</option>
-        </Select>
-        <Select label="Note 样本" value={filters.noteCohort} onChange={(noteCohort) => updateFilters({ noteCohort })}>
-          <option value="all">全部</option>
-          <option value="withNote">有 Note</option>
-          <option value="withoutNote">无 Note</option>
         </Select>
         <Select label="地区/领馆" value={filters.region} onChange={(region) => updateFilters({ region })}>
           <option value="all">全部</option>
@@ -350,24 +392,29 @@ export default function App() {
           ))}
         </Select>
         <Select label="时间范围" value={String(filters.timeRangeDays)} onChange={(value) => { setChartFocus(null); updateFilters({ timeRangeDays: parseTimeRange(value) }); }}>
-          <option value="all">全部 · 月度</option>
-          <option value="730">最近 24 个月 · 周</option>
-          <option value="365">最近 12 个月 · 周</option>
-          <option value="180">最近 180 天 · 日</option>
-          <option value="90">最近 90 天 · 日</option>
+          <option value="all">全部 / 月度</option>
+          <option value="730">最近 24 个月 / 周</option>
+          <option value="365">最近 12 个月 / 周</option>
+          <option value="180">最近 180 天 / 日</option>
+          <option value="90">最近 90 天 / 日</option>
         </Select>
       </section>
 
       <section className="metrics">
-        <Metric label="样本量" value={metrics.total} />
         <Metric label="已 Clear" value={metrics.clear} />
-        <Metric label="处理中" value={metrics.pending} />
-        <Metric label="含 Note" value={metrics.withNote} />
-        <Metric label="中位等待" value={`${metrics.medianWait} 天`} />
-        <Metric label="P90 等待" value={`${metrics.p90Wait} 天`} />
+        <Metric label="处理中" value={metrics.pending} note="已排除 Pending 超 1 年" />
+        <Metric label="已 Reject" value={metrics.reject} />
+        <Metric label="Clear Median" value={`${metrics.medianWait} 天`} />
+        <Metric label="Clear P90" value={`${metrics.p90Wait} 天`} />
+        <Metric label="Clear P99" value={`${metrics.p99Wait} 天`} />
       </section>
 
-      <BacklogRow backlog={pendingBacklog} totalPending={metrics.activePending} />
+      <ClearWaitScatterChart
+        scatter={clearScatter}
+        over180Count={over180ClearedCount}
+        over1yCount={over1yClearedCount}
+        onShowCohort={showCohort}
+      />
 
       <section className="panel chart-panel">
         <div className="section-heading">
@@ -405,20 +452,31 @@ export default function App() {
         />
       </section>
 
-      <section className="panel">
+      <section className="panel" ref={detailRef}>
         <div className="compact-heading">
           <h2>样本明细</h2>
-          <Select label="状态" value={detailStatus} onChange={(value) => setDetailStatus(value as typeof detailStatus)}>
-            <option value="all">全部</option>
+          <Select label="状态" value={detailStatus} onChange={(value) => selectDetailStatus(value as DetailStatus)}>
+            <option value="all">All</option>
             <option value="Clear">Clear</option>
             <option value="Reject">Reject</option>
+            <option value="Pending">Pending</option>
+            <option value="over180">180 to 365</option>
+            <option value="over1y">&gt;365</option>
           </Select>
         </div>
         <p className="note-count muted">
-          {scopeLabel ? `${scopeLabel} · ` : ''}
-          共 {numberFormatter.format(detailView.total)} 条{detailView.total > DETAIL_CAP ? `，显示最新 ${DETAIL_CAP}` : ''}
+          {detailStatus === 'over1y'
+            ? '>365 · '
+            : detailStatus === 'over180'
+              ? '180 to 365 · '
+              : detailStatus === 'Pending'
+                ? 'Pending · '
+                : scopeLabel
+                  ? `${scopeLabel} · `
+                  : ''}
+          共 {numberFormatter.format(detailView.total)} 条{detailStatus === 'all' && !scopeLabel ? '有效样本' : ''}{detailView.total > DETAIL_CAP ? `，显示最新 ${DETAIL_CAP}` : ''}
         </p>
-        <CaseTable cases={detailView.rows} />
+        <CaseTable cases={detailView.rows} notes={caseNotes} sort={detailSort} onSort={toggleDetailSort} />
       </section>
       <footer className="footer-note" aria-label="数据来源与外部工具">
         <span className="footer-title">数据来源与工具</span>
@@ -439,7 +497,16 @@ export default function App() {
     setFilters((current) => ({ ...current, ...update }));
   }
 
+  function toggleDetailSort(key: DetailSort['key']) {
+    setDetailSort((current) =>
+      current.key === key ? { key, dir: current.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' },
+    );
+  }
+
   function handleBarClick(date: string) {
+    setDetailStatus((current) =>
+      current === 'over1y' || current === 'over180' || current === 'Pending' ? 'all' : current,
+    );
     if (chartGranularity === 'day') {
       updateFilters({ selectedDate: date });
       return;
@@ -450,6 +517,20 @@ export default function App() {
       return;
     }
     setChartFocus({ start: date, end: addDaysISO(date, 6), label: `${date} 当周` });
+  }
+
+  function selectDetailStatus(value: DetailStatus) {
+    if (value === 'over1y' || value === 'over180' || value === 'Pending') {
+      setChartFocus(null);
+      updateFilters({ selectedDate: null });
+      setDetailSort({ key: 'wait', dir: 'desc' });
+    }
+    setDetailStatus(value);
+  }
+
+  function showCohort(status: DetailStatus) {
+    selectDetailStatus(status);
+    requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   function navigate(path: string) {
@@ -560,34 +641,92 @@ function Select<T extends string>({
   );
 }
 
-function Metric({ label, value }: { label: string; value: number | string }) {
+function Metric({ label, value, note }: { label: string; value: number | string; note?: string }) {
   return (
     <div className="metric">
       <span>{label}</span>
       <strong>{typeof value === 'number' ? numberFormatter.format(value) : value}</strong>
+      {note ? <span className="metric-note">{note}</span> : null}
     </div>
   );
 }
 
-function BacklogRow({ backlog, totalPending }: { backlog: PendingBacklog[]; totalPending: number }) {
-  if (backlog.every((entry) => entry.count === 0)) {
+function ClearWaitScatterChart({
+  scatter,
+  over180Count,
+  over1yCount,
+  onShowCohort,
+}: {
+  scatter: ClearWaitScatter;
+  over180Count: number;
+  over1yCount: number;
+  onShowCohort: (status: DetailStatus) => void;
+}) {
+  const { days, total } = scatter;
+  if (total === 0 && over180Count === 0 && over1yCount === 0) {
     return null;
   }
+  const W = 760;
+  const PAD_TOP = 8;
+  const DOT_H = 200;
+  const PLOT_H = DOT_H;
+  const AXIS = 26;
+  const baseline = PAD_TOP + PLOT_H;
+  const H = baseline + AXIS;
+  const minDay = 0;
+  const maxDay = CLEAR_SCATTER_MAX_DAYS;
+  const dayToX = (day: number) => ((Math.min(day, maxDay) - minDay) / (maxDay - minDay)) * W;
+  const jitterY = (index: number) => {
+    const seed = Math.sin((index + 1) * 12.9898) * 43758.5453;
+    return PAD_TOP + 2 + (seed - Math.floor(seed)) * (DOT_H - 4);
+  };
+  const tickDays = [0, 30, 60, 90, 120, 150, 180];
+  const denseTicks = new Set([30, 90, 150]);
+  // Uniform random sample so the dense core stays airy; a sample preserves the
+  // distribution shape, and the tail (rare long waits) still shows ~1/step of its points.
+  const sampleStep = Math.max(1, Math.ceil(days.length / 2400));
+  const renderDays = sampleStep > 1 ? days.filter((_, index) => index % sampleStep === 0) : days;
   return (
-    <section className="backlog" aria-label="仍卡在长 Check 的 Pending 积压">
-      <div className="backlog-grid">
-        {backlog.map((entry) => {
-          const share = totalPending > 0 ? (entry.count / totalPending) * 100 : 0;
-          return (
-            <div key={entry.threshold} className={`backlog-card backlog-card-${entry.threshold}`}>
-              <span>≥{entry.threshold} 天仍 Pending</span>
-              <strong>{numberFormatter.format(entry.count)}</strong>
-              <span className="backlog-sub">占比 {share.toFixed(1)}%</span>
-            </div>
-          );
-        })}
+    <section className="panel scatter-panel" aria-label="Clear 出签时长分布">
+      <div className="compact-heading">
+        <h2>Clear 出签时长分布</h2>
+        {sampleStep > 1 && <span className="scatter-note">1 dot ≈ {sampleStep} case</span>}
       </div>
-      <p className="backlog-note">已排除 check_date 超 2 年依然 Pending 的 case</p>
+      <svg className="dotplot-svg" viewBox={`0 0 ${W} ${H}`} role="img" preserveAspectRatio="xMidYMax meet">
+        {renderDays.map((day, index) => (
+          <circle key={index} className="scatter-dot" cx={dayToX(day)} cy={jitterY(index)} r={2.4} />
+        ))}
+        <line className="dotplot-axis" x1={0} y1={baseline + 2} x2={W} y2={baseline + 2} />
+        {tickDays.map((day) => (
+          <line key={`tick-${day}`} className="dotplot-ruler" x1={dayToX(day)} y1={baseline + 2} x2={dayToX(day)} y2={baseline + 7} />
+        ))}
+        {tickDays.map((day) => (
+          <text
+            key={day}
+            className={denseTicks.has(day) ? 'dotplot-tick dotplot-tick-dense' : 'dotplot-tick'}
+            x={day === minDay ? 1 : day === maxDay ? W - 1 : dayToX(day)}
+            y={H - 8}
+            textAnchor={day === minDay ? 'start' : day === maxDay ? 'end' : 'middle'}
+          >
+            {day}
+          </text>
+        ))}
+      </svg>
+      {(over180Count > 0 || over1yCount > 0) && (
+        <div className="outliers-links">
+          {over180Count > 0 && (
+            <button type="button" className="outliers-link" onClick={() => onShowCohort('over180')}>
+              180 天 to 1 年获批的 {numberFormatter.format(over180Count)} 例
+            </button>
+          )}
+          {over180Count > 0 && over1yCount > 0 && <span className="outliers-sep">/</span>}
+          {over1yCount > 0 && (
+            <button type="button" className="outliers-link" onClick={() => onShowCohort('over1y')}>
+              超 1 年获批的 {numberFormatter.format(over1yCount)} 例
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -787,10 +926,21 @@ function ClearWaveChart({
   );
 }
 
-function CaseTable({ cases }: { cases: CaseRecord[] }) {
+function CaseTable({
+  cases,
+  notes,
+  sort,
+  onSort,
+}: {
+  cases: CaseRecord[];
+  notes: Record<string, string> | null;
+  sort: DetailSort;
+  onSort: (key: DetailSort['key']) => void;
+}) {
   if (cases.length === 0) {
     return <p className="muted">当前筛选条件下没有匹配的样本。</p>;
   }
+  const arrow = (key: DetailSort['key']) => (sort.key === key ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
   return (
     <div className="table-wrap">
       <table>
@@ -800,23 +950,23 @@ function CaseTable({ cases }: { cases: CaseRecord[] }) {
             <th>签证</th>
             <th>领馆</th>
             <th>状态</th>
-            <th>Check</th>
-            <th>Clear</th>
-            <th>等待</th>
+            <th><button type="button" className="sort-th" onClick={() => onSort('check')}>Check{arrow('check')}</button></th>
+            <th><button type="button" className="sort-th" onClick={() => onSort('clear')}>Clear{arrow('clear')}</button></th>
+            <th><button type="button" className="sort-th" onClick={() => onSort('wait')}>等待{arrow('wait')}</button></th>
             <th>Note</th>
           </tr>
         </thead>
         <tbody>
           {cases.map((record) => (
             <tr key={record.case_number}>
-              <td><a href={record.detail_url} target="_blank" rel="noreferrer">{record.case_number}</a></td>
+              <td><a href={detailUrl(record.case_number)} target="_blank" rel="noreferrer">{record.case_number}</a></td>
               <td>{record.visa_type}</td>
               <td>{record.consulate} / {getRegionGroup(record.consulate) === 'mainland' ? '大陆' : '海外'}</td>
               <td><span className={`status-tag status-${record.status}`}>{record.status}</span></td>
               <td>{record.check_date}</td>
               <td>{record.complete_date ?? '-'}</td>
               <td>{record.waiting_days ?? '-'} 天</td>
-              <td className="note-cell">{record.detail.Note || '无'}</td>
+              <td className="note-cell"><div className="note-clip">{notes ? (notes[record.case_number] || '无') : ''}</div></td>
             </tr>
           ))}
         </tbody>
@@ -842,20 +992,27 @@ function smoothPath(points: Array<{ x: number; y: number }>): string {
   }, '');
 }
 
+function clearedWaitInRange(records: CaseRecord[], lo: number, hi: number): CaseRecord[] {
+  return records.filter((record) => {
+    if (record.status !== 'Clear') return false;
+    const wait = record.waiting_days ?? 0;
+    return wait >= lo && wait < hi;
+  });
+}
+
 function buildMetrics(records: CaseRecord[]) {
   const waits = records
-    .filter((record) => !isStalePending(record))
+    .filter((record) => record.status === 'Clear')
     .map((record) => record.waiting_days)
     .filter((waitingDays): waitingDays is number => waitingDays !== null)
     .sort((left, right) => left - right);
   return {
-    total: records.length,
     clear: records.filter((record) => record.status === 'Clear').length,
     pending: records.filter((record) => record.status === 'Pending').length,
-    activePending: records.filter((record) => record.status === 'Pending' && !isStalePending(record)).length,
-    withNote: records.filter(hasNote).length,
+    reject: records.filter((record) => record.status === 'Reject').length,
     medianWait: percentile(waits, 0.5),
     p90Wait: percentile(waits, 0.9),
+    p99Wait: percentile(waits, 0.99),
   };
 }
 
@@ -901,12 +1058,6 @@ function countActiveFilters(filters: Filters): number {
     count += 1;
   }
   if (filters.visaSubtype !== DEFAULT_FILTERS.visaSubtype) {
-    count += 1;
-  }
-  if (filters.checkDepth !== DEFAULT_FILTERS.checkDepth) {
-    count += 1;
-  }
-  if (filters.noteCohort !== DEFAULT_FILTERS.noteCohort) {
     count += 1;
   }
   if (filters.region !== DEFAULT_FILTERS.region) {

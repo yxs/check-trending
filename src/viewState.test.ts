@@ -4,8 +4,6 @@ import { buildSearchFromViewState, readViewStateFromSearch } from './viewState';
 import type { Filters } from './types';
 
 const DEFAULT_FILTERS: Filters = {
-  checkDepth: 'gte60',
-  noteCohort: 'all',
   region: 'all',
   selectedDate: null,
   timeRangeDays: 'all',
@@ -16,20 +14,20 @@ const DEFAULT_FILTERS: Filters = {
 describe('view state URL parsing', () => {
   it('reads valid query params into filters', () => {
     const result = readViewStateFromSearch(
-      '?vg=work&vs=h&d=gte90&n=withNote&r=Tokyo&t=180&s=2026-04-30',
+      '?vg=work&vs=h&r=Tokyo&t=180&s=2026-04-30',
       DEFAULT_FILTERS,
     );
 
     expect(result).toEqual({
       filters: {
-        checkDepth: 'gte90',
-        noteCohort: 'withNote',
         region: 'Tokyo',
         selectedDate: '2026-04-30',
         timeRangeDays: 180,
         visaGroup: 'work',
         visaSubtype: 'h',
       },
+      detailStatus: 'all',
+      detailSort: { key: 'clear', dir: 'desc' },
     });
   });
 
@@ -45,6 +43,8 @@ describe('view state URL parsing', () => {
         visaGroup: 'b',
         visaSubtype: 'all',
       },
+      detailStatus: 'all',
+      detailSort: { key: 'clear', dir: 'desc' },
     });
   });
 });
@@ -69,8 +69,6 @@ describe('view state URL serialization', () => {
     const search = buildSearchFromViewState(
       {
         ...DEFAULT_FILTERS,
-        checkDepth: 'gte30',
-        noteCohort: 'withoutNote',
         region: 'Toronto',
         timeRangeDays: 365,
         visaGroup: 'work',
@@ -84,13 +82,22 @@ describe('view state URL serialization', () => {
     expect(parsed).toEqual({
       filters: {
         ...DEFAULT_FILTERS,
-        checkDepth: 'gte30',
-        noteCohort: 'withoutNote',
         region: 'Toronto',
         timeRangeDays: 365,
         visaGroup: 'work',
         visaSubtype: 'o',
       },
+      detailStatus: 'all',
+      detailSort: { key: 'clear', dir: 'desc' },
     });
+  });
+
+  it('round-trips detail status and sort in the URL', () => {
+    const search = buildSearchFromViewState(DEFAULT_FILTERS, DEFAULT_FILTERS, 'over1y', { key: 'wait', dir: 'asc' });
+    expect(search).toBe('ds=over1y&sort=wait-asc');
+
+    const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS);
+    expect(parsed.detailStatus).toBe('over1y');
+    expect(parsed.detailSort).toEqual({ key: 'wait', dir: 'asc' });
   });
 });

@@ -8,6 +8,7 @@ DATA_DIR = Path("data/checkee")
 CANONICAL_SOURCE = DATA_DIR / "checkee_cases.json"
 SUMMARY = DATA_DIR / "crawl_summary.json"
 TARGET = Path("public/data/app-data.json")
+NOTES_TARGET = Path("public/data/case-notes.json")
 
 
 def resolve_source_file() -> Path:
@@ -59,19 +60,15 @@ def validate_summary(cases: list[dict[str, Any]], summary: dict[str, Any]) -> No
 
 
 def to_public_case(record: dict) -> dict:
-    detail = record.get("detail") or {}
+    # Note + detail_url are intentionally excluded: the dashboard analytics never use them,
+    # and the Note text is ~80% of the payload. detail_url is reconstructed client-side from
+    # case_number; Notes ship in case-notes.json, lazy-loaded only for the sample table.
     return {
         "case_number": record["case_number"],
         "check_date": record["check_date"],
         "complete_date": record["complete_date"],
         "consulate": record["consulate"],
-        "detail": {"Note": detail.get("Note", "")},
-        "detail_url": record["detail_url"],
-        "display_id": record["display_id"],
-        "major": record["major"],
-        "month": record["month"],
         "status": record["status"],
-        "visa_entry": record["visa_entry"],
         "visa_type": record["visa_type"],
         "waiting_days": record["waiting_days"],
     }
@@ -83,12 +80,21 @@ def main() -> None:
     summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
     validate_summary(cases, summary)
     public_cases = [to_public_case(record) for record in cases]
+    case_notes = {
+        record["case_number"]: (record.get("detail") or {}).get("Note", "")
+        for record in cases
+        if (record.get("detail") or {}).get("Note")
+    }
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     TARGET.write_text(
         json.dumps({"cases": public_cases, "summary": summary}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
-    print(f"wrote {TARGET} from {source} with {len(public_cases)} cases")
+    NOTES_TARGET.write_text(
+        json.dumps(case_notes, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"wrote {TARGET} ({len(public_cases)} cases) + {NOTES_TARGET} ({len(case_notes)} notes) from {source}")
 
 
 if __name__ == "__main__":

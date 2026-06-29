@@ -3,7 +3,6 @@ import type { VisaGroup } from './types';
 
 export interface NoteCase {
   cn: string;
-  id: string;
   vt: string;
   ve: string;
   co: string;

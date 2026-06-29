@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import {
-  DEFAULT_NOTE_FILTERS,
   buildSearchBlob,
   detailUrl,
   highlightSegments,
@@ -18,9 +17,9 @@ const PAGE_SIZE = 50;
 const numberFormatter = new Intl.NumberFormat('zh-CN');
 
 const STATUS_LABEL: Record<string, string> = {
-  Clear: '已 Clear',
-  Pending: '处理中',
-  Reject: '拒签',
+  Clear: 'Clear',
+  Pending: 'Pending',
+  Reject: 'Reject',
 };
 
 const VISA_GROUPS = new Set(['all', 'b', 'work', 'student', 'other']);
@@ -192,8 +191,8 @@ export function NotesPage({
               >
                 <option value="all">全部</option>
                 <option value="work">工作签 H/L/O</option>
-                <option value="student">学生/学者 F/J</option>
-                <option value="b">B 签 B1/B2</option>
+                <option value="student">学生学者 F/J</option>
+                <option value="b">B1/B2</option>
                 <option value="other">其他</option>
               </Field>
               <Field
@@ -202,9 +201,9 @@ export function NotesPage({
                 onChange={(status) => updateFilters({ status })}
               >
                 <option value="all">全部</option>
-                <option value="Clear">已 Clear</option>
-                <option value="Pending">处理中</option>
-                <option value="Reject">拒签</option>
+                <option value="Clear">Clear</option>
+                <option value="Pending">Pending</option>
+                <option value="Reject">Reject</option>
               </Field>
               <Field
                 label="年份"

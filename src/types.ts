@@ -3,29 +3,21 @@ export interface CaseRecord {
   check_date: string;
   complete_date: string | null;
   consulate: string;
-  detail: Record<string, string>;
-  detail_url: string;
-  display_id: string;
-  major: string;
-  month: string;
   status: 'Clear' | 'Pending' | 'Reject' | string;
-  visa_entry: string;
   visa_type: string;
   waiting_days: number | null;
 }
 
 export type VisaGroup = 'all' | 'b' | 'work' | 'student' | 'other';
 export type VisaSubtype = 'all' | 'h' | 'l' | 'o' | 'f' | 'j';
-export type CheckDepth = 'all' | 'gte7' | 'gte30' | 'gte60' | 'gte90' | 'gte180' | 'gte270';
-export type CheckDepthBucket = 'lt7' | Exclude<CheckDepth, 'all'>;
-export type NoteCohort = 'all' | 'withNote' | 'withoutNote';
 export type RegionFilter = 'all' | 'mainland' | 'overseas' | (string & {});
 export type TimeRangeDays = 'all' | 90 | 180 | 365 | 730;
 export type Granularity = 'day' | 'week' | 'month';
 
+export type DetailStatus = 'all' | 'Clear' | 'Reject' | 'Pending' | 'over180' | 'over1y';
+export type DetailSort = { key: 'check' | 'clear' | 'wait'; dir: 'asc' | 'desc' };
+
 export interface Filters {
-  checkDepth: CheckDepth;
-  noteCohort: NoteCohort;
   region: RegionFilter;
   selectedDate: string | null;
   timeRangeDays: TimeRangeDays;
@@ -44,9 +36,9 @@ export interface MovingAveragePoint {
   value: number;
 }
 
-export interface PendingBacklog {
-  threshold: number;
-  count: number;
+export interface ClearWaitScatter {
+  days: number[];
+  total: number;
 }
 
 export interface WebDataSummary {

@@ -18,7 +18,7 @@ for f in files:
         try: wd = int(r.get('wd'))
         except (TypeError, ValueError): wd = None
         rec = {
-            'cn': cn, 'id': r.get('id',''), 'vt': r.get('vt',''), 've': r.get('ve',''),
+            'cn': cn, 'vt': r.get('vt',''), 've': r.get('ve',''),
             'co': r.get('con',''), 'mj': r.get('maj',''), 'st': r.get('st',''),
             'cd': r.get('cd',''), 'cp': cmp_, 'wd': wd, 'nt': r.get('note','').strip(),
         }

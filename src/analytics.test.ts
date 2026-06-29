@@ -2,10 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   bucketClearSeries,
+  buildClearWaitScatter,
   buildDailyClearSeries,
-  buildPendingBacklog,
   filterCases,
-  getCheckDepth,
   getDateTickIndexes,
   getRegionGroup,
   granularityForRange,
@@ -20,13 +19,7 @@ const baseCase: CaseRecord = {
   check_date: '2025-12-01',
   complete_date: '2026-01-10',
   consulate: 'BeiJing',
-  detail: { Note: '' },
-  detail_url: 'https://example.com',
-  display_id: 'demo',
-  major: 'CS',
-  month: '2025-12',
   status: 'Clear',
-  visa_entry: 'New',
   visa_type: 'H1',
   waiting_days: 40,
 };
@@ -58,70 +51,42 @@ describe('analytics grouping', () => {
     expect(getRegionGroup('HongKong')).toBe('overseas');
     expect(getRegionGroup('Vancouver')).toBe('overseas');
   });
-
-  it('converts waiting days into check depth buckets', () => {
-    expect(getCheckDepth(makeCase({ waiting_days: 6 }))).toBe('lt7');
-    expect(getCheckDepth(makeCase({ waiting_days: 30 }))).toBe('gte30');
-    expect(getCheckDepth(makeCase({ waiting_days: 60 }))).toBe('gte60');
-    expect(getCheckDepth(makeCase({ waiting_days: 90 }))).toBe('gte90');
-    expect(getCheckDepth(makeCase({ waiting_days: 180 }))).toBe('gte180');
-    expect(getCheckDepth(makeCase({ waiting_days: 270 }))).toBe('gte270');
-  });
 });
 
-describe('pending backlog', () => {
-  it('counts only Pending cases at or beyond each threshold', () => {
+describe('clear wait scatter', () => {
+  it('collects Clear cases that cleared within 180 days', () => {
     const cases = [
-      makeCase({ status: 'Pending', waiting_days: 95 }),
-      makeCase({ status: 'Pending', waiting_days: 200 }),
-      makeCase({ status: 'Pending', waiting_days: 300 }),
-      makeCase({ status: 'Pending', waiting_days: 40 }),
-      makeCase({ status: 'Clear', waiting_days: 300 }),
+      makeCase({ status: 'Clear', waiting_days: 5 }),    // in range
+      makeCase({ status: 'Clear', waiting_days: 95 }),   // in range
+      makeCase({ status: 'Clear', waiting_days: 179 }),  // in range (< 180)
+      makeCase({ status: 'Clear', waiting_days: 180 }),  // >= 180 -> excluded
+      makeCase({ status: 'Clear', waiting_days: 400 }),  // excluded
+      makeCase({ status: 'Pending', waiting_days: 100 }),// not Clear -> excluded
+      makeCase({ status: 'Clear', waiting_days: null }), // null wait -> excluded
     ];
-    expect(buildPendingBacklog(cases)).toEqual([
-      { threshold: 90, count: 3 },
-      { threshold: 180, count: 2 },
-      { threshold: 270, count: 1 },
-    ]);
+    const scatter = buildClearWaitScatter(cases);
+    expect(scatter.days).toEqual([5, 95, 179]);
+    expect(scatter.total).toBe(3);
   });
 
-  it('treats missing waiting_days as zero', () => {
-    const cases = [makeCase({ status: 'Pending', waiting_days: null })];
-    expect(buildPendingBacklog(cases)).toEqual([
-      { threshold: 90, count: 0 },
-      { threshold: 180, count: 0 },
-      { threshold: 270, count: 0 },
-    ]);
-  });
-
-  it('excludes stale Pending cases waiting beyond two years (presumed resolved offline)', () => {
-    const cases = [
-      makeCase({ status: 'Pending', waiting_days: 300 }),
-      makeCase({ status: 'Pending', waiting_days: 700 }),
-      makeCase({ status: 'Pending', waiting_days: 730 }),
-      makeCase({ status: 'Pending', waiting_days: 731 }),
-      makeCase({ status: 'Pending', waiting_days: 1200 }),
-    ];
-    expect(buildPendingBacklog(cases)).toEqual([
-      { threshold: 90, count: 3 },
-      { threshold: 180, count: 3 },
-      { threshold: 270, count: 3 },
-    ]);
+  it('returns an empty scatter when no Clear cases fall within 180 days', () => {
+    expect(buildClearWaitScatter([makeCase({ status: 'Clear', waiting_days: 400 })])).toEqual({
+      days: [],
+      total: 0,
+    });
   });
 });
 
 describe('filtering and daily clear series', () => {
   const cases: CaseRecord[] = [
-    makeCase({ case_number: '1', complete_date: '2026-01-10', visa_type: 'H1', waiting_days: 40, detail: { Note: 'has note' } }),
-    makeCase({ case_number: '2', complete_date: '2026-01-10', visa_type: 'B2', waiting_days: 65, detail: { Note: '' } }),
-    makeCase({ case_number: '3', complete_date: '2026-01-11', visa_type: 'L1', waiting_days: 70, consulate: 'Toronto', detail: { Note: 'passport submitted' } }),
-    makeCase({ case_number: '4', complete_date: null, visa_type: 'O1', status: 'Pending', waiting_days: 100, consulate: 'Europe', detail: { Note: 'pending' } }),
+    makeCase({ case_number: '1', complete_date: '2026-01-10', visa_type: 'H1', waiting_days: 40 }),
+    makeCase({ case_number: '2', complete_date: '2026-01-10', visa_type: 'B2', waiting_days: 65 }),
+    makeCase({ case_number: '3', complete_date: '2026-01-11', visa_type: 'L1', waiting_days: 70, consulate: 'Toronto' }),
+    makeCase({ case_number: '4', complete_date: null, visa_type: 'O1', status: 'Pending', waiting_days: 100, consulate: 'Europe' }),
   ];
 
-  it('applies visa group, depth, note, region, and status filters together', () => {
+  it('applies visa group, region, and status filters together', () => {
     const filters: Filters = {
-      checkDepth: 'gte60',
-      noteCohort: 'withNote',
       region: 'overseas',
       selectedDate: null,
       timeRangeDays: 'all',
@@ -140,8 +105,6 @@ describe('filtering and daily clear series', () => {
     ];
 
     expect(filterCases(records, {
-      checkDepth: 'gte60',
-      noteCohort: 'all',
       region: 'all',
       selectedDate: null,
       timeRangeDays: 'all',

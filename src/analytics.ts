@@ -1,26 +1,21 @@
 import type {
   CaseRecord,
-  CheckDepth,
-  CheckDepthBucket,
   DailyClearPoint,
   Filters,
   Granularity,
   MovingAveragePoint,
-  PendingBacklog,
+  ClearWaitScatter,
   RegionFilter,
   TimeRangeDays,
   VisaSubtype,
   VisaGroup,
 } from './types';
 
-export const LONG_CHECK_THRESHOLDS = [90, 180, 270] as const;
-export const STALE_PENDING_DAYS = 730;
+export const CLEAR_SCATTER_MAX_DAYS = 180;
+export const LONG_CHECK_PENDING_MAX_DAYS = 365;
+export const STALE_PENDING_DAYS = 365;
 
 const MAINLAND_CONSULATES = new Set(['BeiJing', 'ShangHai', 'GuangZhou', 'ShenYang', 'WuHan', 'ChengDu']);
-
-export function hasNote(record: CaseRecord): boolean {
-  return Boolean(record.detail?.Note?.trim());
-}
 
 export function isStalePending(record: CaseRecord): boolean {
   return (
@@ -68,45 +63,6 @@ export function getRegionGroup(consulate: string): Exclude<RegionFilter, 'all'> 
   return MAINLAND_CONSULATES.has(consulate) ? 'mainland' : 'overseas';
 }
 
-export function getCheckDepth(record: CaseRecord): CheckDepthBucket {
-  const waitingDays = record.waiting_days ?? 0;
-  if (waitingDays >= 270) {
-    return 'gte270';
-  }
-  if (waitingDays >= 180) {
-    return 'gte180';
-  }
-  if (waitingDays >= 90) {
-    return 'gte90';
-  }
-  if (waitingDays >= 60) {
-    return 'gte60';
-  }
-  if (waitingDays >= 30) {
-    return 'gte30';
-  }
-  if (waitingDays >= 7) {
-    return 'gte7';
-  }
-  return 'lt7';
-}
-
-export function matchesCheckDepth(record: CaseRecord, checkDepth: CheckDepth): boolean {
-  if (checkDepth === 'all') {
-    return true;
-  }
-  const waitingDays = record.waiting_days ?? 0;
-  const thresholds: Record<Exclude<CheckDepth, 'all'>, number> = {
-    gte7: 7,
-    gte30: 30,
-    gte60: 60,
-    gte90: 90,
-    gte180: 180,
-    gte270: 270,
-  };
-  return waitingDays >= thresholds[checkDepth];
-}
-
 export function filterCases(records: CaseRecord[], filters: Filters): CaseRecord[] {
   const newestDate = getNewestRelevantDate(records);
   const cutoff = getDateCutoff(newestDate, filters.timeRangeDays);
@@ -116,15 +72,6 @@ export function filterCases(records: CaseRecord[], filters: Filters): CaseRecord
       return false;
     }
     if (filters.visaSubtype !== 'all' && getVisaSubtype(record.visa_type) !== filters.visaSubtype) {
-      return false;
-    }
-    if (!matchesCheckDepth(record, filters.checkDepth)) {
-      return false;
-    }
-    if (filters.noteCohort === 'withNote' && !hasNote(record)) {
-      return false;
-    }
-    if (filters.noteCohort === 'withoutNote' && hasNote(record)) {
       return false;
     }
     if (filters.region === 'mainland' || filters.region === 'overseas') {
@@ -276,21 +223,17 @@ function buildDateRange(startDate: string, endDate: string): string[] {
   return dates;
 }
 
-export function buildPendingBacklog(
-  records: CaseRecord[],
-  thresholds: readonly number[] = LONG_CHECK_THRESHOLDS,
-): PendingBacklog[] {
-  return thresholds.map((threshold) => {
-    let count = 0;
-    for (const record of records) {
-      if (record.status !== 'Pending' || isStalePending(record)) {
-        continue;
-      }
-      if ((record.waiting_days ?? 0) >= threshold) {
-        count += 1;
-      }
+export function buildClearWaitScatter(records: CaseRecord[]): ClearWaitScatter {
+  const days: number[] = [];
+  for (const record of records) {
+    if (record.status !== 'Clear' || record.waiting_days == null) {
+      continue;
     }
-    return { threshold, count };
-  });
+    const day = record.waiting_days;
+    if (day >= 0 && day < CLEAR_SCATTER_MAX_DAYS) {
+      days.push(day);
+    }
+  }
+  return { days, total: days.length };
 }
 
