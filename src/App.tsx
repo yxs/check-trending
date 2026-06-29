@@ -454,7 +454,7 @@ export default function App() {
 
       <section className="panel" ref={detailRef}>
         <div className="compact-heading">
-          <h2>样本明细</h2>
+          <h2>Case 明细</h2>
           <Select label="状态" value={detailStatus} onChange={(value) => selectDetailStatus(value as DetailStatus)}>
             <option value="all">All</option>
             <option value="Clear">Clear</option>
