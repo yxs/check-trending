@@ -97,6 +97,20 @@ describe('filtering and daily clear series', () => {
     expect(filterCases(cases, filters).map((item) => item.case_number)).toEqual(['3', '4']);
   });
 
+  it('returns an empty list without throwing when records are empty and a time range is set', () => {
+    for (const timeRangeDays of [90, 180, 365, 730] as const) {
+      expect(() =>
+        filterCases([], {
+          region: 'all',
+          selectedDate: null,
+          timeRangeDays,
+          visaGroup: 'all',
+          visaSubtype: 'all',
+        }),
+      ).not.toThrow();
+    }
+  });
+
   it('applies student visa subtype filters', () => {
     const records = [
       makeCase({ case_number: 'f', visa_type: 'F1', waiting_days: 80 }),

@@ -208,6 +208,10 @@ function getDateCutoff(newestDate: string, timeRangeDays: Filters['timeRangeDays
     return null;
   }
   const newest = new Date(`${newestDate}T00:00:00Z`);
+  // Empty records (first render before data loads) → "0000-00-00" sentinel is an Invalid Date.
+  if (Number.isNaN(newest.getTime())) {
+    return null;
+  }
   newest.setUTCDate(newest.getUTCDate() - timeRangeDays + 1);
   return newest.toISOString().slice(0, 10);
 }
