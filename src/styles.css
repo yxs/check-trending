@@ -190,6 +190,30 @@ h2 {
   background: var(--surface-muted);
 }
 
+.hero-links a.long-check-link {
+  border-color: rgba(194, 65, 12, 0.34);
+  background: rgba(251, 146, 60, 0.12);
+  color: #c2410c;
+}
+
+.hero-links a.long-check-link:hover {
+  border-color: rgba(194, 65, 12, 0.56);
+  background: rgba(251, 146, 60, 0.2);
+  color: #9a3412;
+}
+
+:root[data-theme="dark"] .hero-links a.long-check-link {
+  border-color: rgba(251, 146, 60, 0.38);
+  background: rgba(251, 146, 60, 0.16);
+  color: #fdba74;
+}
+
+:root[data-theme="dark"] .hero-links a.long-check-link:hover {
+  border-color: rgba(251, 146, 60, 0.64);
+  background: rgba(251, 146, 60, 0.24);
+  color: #fed7aa;
+}
+
 .freshness {
   min-width: 220px;
   padding: 18px 22px;
@@ -733,7 +757,7 @@ code {
 
 .table-wrap {
   overflow: auto;
-  max-height: 520px;
+  max-height: 1040px;
   border: 1px solid var(--border);
   border-radius: 14px;
 }
@@ -853,6 +877,11 @@ a {
   min-width: 280px;
   max-width: 460px;
   line-height: 1.5;
+}
+
+.note-clip {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .error {

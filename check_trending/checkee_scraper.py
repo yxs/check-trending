@@ -65,6 +65,7 @@ class CircuitBreakerError(Exception):
 class Cell:
     text: str
     links: tuple[str, ...]
+    link_titles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ class TableParser(HTMLParser):
         self._row: list[Cell] | None = None
         self._cell_text: list[str] | None = None
         self._cell_links: list[str] | None = None
+        self._cell_link_titles: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
@@ -129,11 +131,16 @@ class TableParser(HTMLParser):
         if tag in {"td", "th"} and self._row is not None:
             self._cell_text = []
             self._cell_links = []
+            self._cell_link_titles = []
             return
-        if tag == "a" and self._cell_links is not None:
-            href = dict(attrs).get("href")
+        if tag == "a" and self._cell_links is not None and self._cell_link_titles is not None:
+            attr_map = dict(attrs)
+            href = attr_map.get("href")
             if href:
                 self._cell_links.append(href)
+            title = attr_map.get("title")
+            if title:
+                self._cell_link_titles.append(unescape(title).strip())
 
     def handle_data(self, data: str) -> None:
         if self._cell_text is not None:
@@ -142,9 +149,14 @@ class TableParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in {"td", "th"} and self._row is not None and self._cell_text is not None:
             text = normalize_text(" ".join(self._cell_text))
-            self._row.append(Cell(text=text, links=tuple(self._cell_links or ())))
+            self._row.append(Cell(
+                text=text,
+                links=tuple(self._cell_links or ()),
+                link_titles=tuple(self._cell_link_titles or ()),
+            ))
             self._cell_text = None
             self._cell_links = None
+            self._cell_link_titles = None
             return
         if tag == "tr" and self._row is not None:
             if self._row:
@@ -184,6 +196,15 @@ def parse_month_page(
         if end_date is not None and parsed_check_date > end_date:
             continue
 
+        note = next((title.strip() for title in row[10].link_titles if title.strip()), "")
+        detail = None
+        if note:
+            detail = {
+                "case_number": case_number,
+                "Note": note,
+                "Status": row[6].text,
+            }
+
         cases.append(
             CaseRecord(
                 case_number=case_number,
@@ -199,6 +220,7 @@ def parse_month_page(
                 detail_url=build_detail_url(case_number),
                 month=month,
                 source_url=source_url,
+                detail=detail,
             )
         )
 

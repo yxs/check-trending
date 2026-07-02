@@ -14,6 +14,10 @@ import type {
 export const CLEAR_SCATTER_MAX_DAYS = 180;
 export const LONG_CHECK_PENDING_MAX_DAYS = 365;
 export const STALE_PENDING_DAYS = 365;
+export const LONG_CHECK_NOTE_MIN_DAYS = 180;
+export const LONG_CHECK_NOTE_MAX_DAYS = 730;
+export const LONG_CHECK_NOTE_RECENT_DAYS = 730;
+export const RICH_NOTE_MIN_SCORE = 8;
 
 const MAINLAND_CONSULATES = new Set(['BeiJing', 'ShangHai', 'GuangZhou', 'ShenYang', 'WuHan', 'ChengDu']);
 
@@ -23,6 +27,46 @@ export function isStalePending(record: CaseRecord): boolean {
     record.status !== 'Reject' &&
     (record.waiting_days ?? 0) > STALE_PENDING_DAYS
   );
+}
+
+export interface LongCheckNoteSummary {
+  total: number;
+  richTotal: number;
+  candidates: CaseRecord[];
+}
+
+export function buildLongCheckNoteSummary(records: CaseRecord[], newestDate: string): LongCheckNoteSummary {
+  const checkCutoff = getDateCutoff(newestDate, LONG_CHECK_NOTE_RECENT_DAYS);
+  const candidates = records
+    .filter((record) => isLongCheckNoteCandidate(record, checkCutoff))
+    .sort((left, right) => {
+      const scoreDiff = (right.note_richness_score ?? 0) - (left.note_richness_score ?? 0);
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+      const signalDiff = (right.note_signal_count ?? 0) - (left.note_signal_count ?? 0);
+      if (signalDiff !== 0) {
+        return signalDiff;
+      }
+      const timelineDiff = (right.note_timeline_count ?? 0) - (left.note_timeline_count ?? 0);
+      if (timelineDiff !== 0) {
+        return timelineDiff;
+      }
+      return (right.waiting_days ?? 0) - (left.waiting_days ?? 0);
+    });
+  const richTotal = candidates.filter((record) => (record.note_richness_score ?? 0) >= RICH_NOTE_MIN_SCORE).length;
+  return { total: candidates.length, richTotal, candidates };
+}
+
+function isLongCheckNoteCandidate(record: CaseRecord, checkCutoff: string | null): boolean {
+  if (!record.has_note) {
+    return false;
+  }
+  if (checkCutoff && record.check_date < checkCutoff) {
+    return false;
+  }
+  const wait = record.waiting_days;
+  return wait != null && wait >= LONG_CHECK_NOTE_MIN_DAYS && wait < LONG_CHECK_NOTE_MAX_DAYS;
 }
 
 export function getVisaGroup(visaType: string): Exclude<VisaGroup, 'all'> {

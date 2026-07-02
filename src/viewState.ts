@@ -14,7 +14,15 @@ type ViewState = {
 };
 
 const VISA_GROUP_VALUES: VisaGroup[] = ['all', 'b', 'work', 'student', 'other'];
-const DETAIL_STATUS_VALUES: DetailStatus[] = ['all', 'Clear', 'Reject', 'Pending', 'over180', 'over1y'];
+const DETAIL_STATUS_VALUES: DetailStatus[] = [
+  'all',
+  'Clear',
+  'Reject',
+  'Pending',
+  'over180',
+  'over1y',
+  'longCheckNotes',
+];
 const SORT_KEYS: DetailSort['key'][] = ['check', 'clear', 'wait'];
 const DEFAULT_DETAIL_SORT: DetailSort = { key: 'clear', dir: 'desc' };
 const TIME_RANGE_PARAM_TO_VALUE: Record<string, TimeRangeDays> = {
@@ -50,7 +58,11 @@ export function readViewStateFromSearch(search: string, defaultFilters: Filters)
   const detailSort = parseDetailSort(params.get('sort'));
   // over1y / Pending are global cohorts that ignore a selected date; drop a stray ?s= so
   // the chart and the detail table can't disagree on a shared/hand-edited URL.
-  const cohortMode = detailStatus === 'over1y' || detailStatus === 'over180' || detailStatus === 'Pending';
+  const cohortMode =
+    detailStatus === 'over1y' ||
+    detailStatus === 'over180' ||
+    detailStatus === 'Pending' ||
+    detailStatus === 'longCheckNotes';
   const selectedDate = cohortMode ? null : normalizeDate(params.get('s'));
 
   return {

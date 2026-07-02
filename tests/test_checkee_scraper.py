@@ -58,7 +58,8 @@ MONTH_HTML = """
         <td>2025-08-01</td>
         <td>0000-00-00</td>
         <td>235</td>
-        <td><a href="http://www.checkee.info/personal_detail.php?casenum=843510">detail</a></td>
+        <td><a href="http://www.checkee.info/personal_detail.php?casenum=843510" title="8/1 interview
+8/2 submitted DS-5535">detail</a></td>
       </tr>
     </table>
   </body>
@@ -129,6 +130,14 @@ class HtmlParsingTest(unittest.TestCase):
             "https://www.checkee.info/personal_detail.php?casenum=843418",
         )
         self.assertEqual(cases[1].complete_date, None)
+        self.assertEqual(
+            cases[1].detail,
+            {
+                "case_number": "843510",
+                "Note": "8/1 interview\n8/2 submitted DS-5535",
+                "Status": "Pending",
+            },
+        )
 
     def test_parse_month_page_skips_cases_before_start_date(self) -> None:
         old_case_html = MONTH_HTML.replace("2025-08-01", "2025-06-30")

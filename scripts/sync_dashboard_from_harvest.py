@@ -12,6 +12,7 @@ START = '2021-01-01'
 BASE = 'https://www.checkee.info'
 TERMINAL = {'Clear', 'Reject'}
 TODAY = date.today()
+TODAY_ISO = TODAY.isoformat()
 
 def to_int(v):
     try: return int(v)
@@ -57,6 +58,7 @@ for cn, r in hv.items():
     if note:
         if (detail.get('Note') or '').strip() != note:
             note_updates += 1
+            detail['Note Updated At'] = TODAY_ISO
         detail['Note'] = note
     detail['Status'] = r.get('st', detail.get('Status', ''))
     rec = {

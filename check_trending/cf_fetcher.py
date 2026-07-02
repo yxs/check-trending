@@ -17,7 +17,7 @@ class BrowserFetcher:
         viewport_height: int = 800,
         locale: str = "en-US",
         navigation_timeout_ms: int = 60_000,
-        challenge_wait_ms: int = 60_000,
+        challenge_wait_ms: int = 180_000,
     ) -> None:
         self.channel = channel
         self.headless = headless

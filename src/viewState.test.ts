@@ -100,4 +100,12 @@ describe('view state URL serialization', () => {
     expect(parsed.detailStatus).toBe('over1y');
     expect(parsed.detailSort).toEqual({ key: 'wait', dir: 'asc' });
   });
+
+  it('round-trips the long check notes detail cohort', () => {
+    const search = buildSearchFromViewState(DEFAULT_FILTERS, DEFAULT_FILTERS, 'longCheckNotes');
+    expect(search).toBe('ds=longCheckNotes');
+
+    const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS);
+    expect(parsed.detailStatus).toBe('longCheckNotes');
+  });
 });
