@@ -11,9 +11,11 @@ from check_trending.checkee_scraper import (
     build_months,
     case_from_detail,
     determine_calibration_targets,
+    default_calibration_window,
     extract_detail_table_html,
     load_calibration_log,
     load_monthly_manifest,
+    merge_listing_record,
     parse_detail_page,
     parse_month_page,
     previous_month_label,
@@ -239,7 +241,86 @@ class StorageTest(unittest.TestCase):
             self.assertEqual(roundtripped, log)
 
 
+class ListingMergeTest(unittest.TestCase):
+    def test_merge_listing_record_updates_status_and_note_from_monthly_listing(self) -> None:
+        existing = {
+            "case_number": "843510",
+            "status": "Pending",
+            "detail": {"case_number": "843510", "Note": "8/1 interview", "Status": "Pending"},
+        }
+        listing = CaseRecord(
+            case_number="843510",
+            display_id="求求求下签",
+            visa_type="F1",
+            visa_entry="Renewal",
+            consulate="ShangHai",
+            major="robo",
+            status="Clear",
+            check_date="2025-08-01",
+            complete_date="2026-03-01",
+            waiting_days=212,
+            detail_url="https://www.checkee.info/personal_detail.php?casenum=843510",
+            month="2025-08",
+            source_url="https://www.checkee.info/main.php?dispdate=2025-08",
+            detail={
+                "case_number": "843510",
+                "Note": "8/1 interview\n3/1 issued",
+                "Status": "Clear",
+            },
+        )
+
+        merged, changed = merge_listing_record(existing, listing, observed_date="2026-07-04")
+
+        self.assertTrue(changed["status_changed"])
+        self.assertTrue(changed["note_changed"])
+        self.assertEqual(merged["status"], "Clear")
+        self.assertEqual(merged["detail"]["Note"], "8/1 interview\n3/1 issued")
+        self.assertEqual(merged["detail"]["Note Updated At"], "2026-07-04")
+
+    def test_merge_listing_record_ignores_note_whitespace_only_changes(self) -> None:
+        existing = {
+            "case_number": "843510",
+            "status": "Pending",
+            "detail": {"case_number": "843510", "Note": "8/1 interview\n3/1 issued"},
+        }
+        listing = CaseRecord(
+            case_number="843510",
+            display_id="求求求下签",
+            visa_type="F1",
+            visa_entry="Renewal",
+            consulate="ShangHai",
+            major="robo",
+            status="Pending",
+            check_date="2025-08-01",
+            complete_date=None,
+            waiting_days=235,
+            detail_url="https://www.checkee.info/personal_detail.php?casenum=843510",
+            month="2025-08",
+            source_url="https://www.checkee.info/main.php?dispdate=2025-08",
+            detail={
+                "case_number": "843510",
+                "Note": "8/1 interview  3/1 issued",
+                "Status": "Pending",
+            },
+        )
+
+        merged, changed = merge_listing_record(existing, listing, observed_date="2026-07-04")
+
+        self.assertFalse(changed["note_changed"])
+        self.assertEqual(merged["detail"]["Note"], "8/1 interview\n3/1 issued")
+
+
 class CalibrationTargetsTest(unittest.TestCase):
+    def test_default_calibration_window_uses_current_year_and_previous_two_years(self) -> None:
+        self.assertEqual(
+            default_calibration_window(date(2026, 7, 4)),
+            (date(2024, 1, 1), date(2026, 7, 4)),
+        )
+        self.assertEqual(
+            default_calibration_window(date(2027, 2, 10)),
+            (date(2025, 1, 1), date(2027, 2, 10)),
+        )
+
     def test_empty_log_includes_all_in_scope_months(self) -> None:
         targets = determine_calibration_targets(
             today=date(2026, 5, 2),
@@ -251,23 +332,23 @@ class CalibrationTargetsTest(unittest.TestCase):
             ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
         )
 
-    def test_full_log_includes_only_current_and_previous(self) -> None:
+    def test_full_log_still_refreshes_all_in_scope_months(self) -> None:
         log = {m: "2026-04-15" for m in ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"]}
         targets = determine_calibration_targets(
             today=date(2026, 5, 2),
             available_months=list(log.keys()),
             log=log,
         )
-        self.assertEqual(targets, ["2026-04", "2026-05"])
+        self.assertEqual(targets, ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"])
 
-    def test_log_missing_one_earlier_month_recovers_it(self) -> None:
+    def test_log_missing_one_earlier_month_does_not_change_full_refresh_window(self) -> None:
         log = {"2025-12": "2026-04-15", "2026-01": "2026-04-15", "2026-03": "2026-04-15", "2026-04": "2026-04-15", "2026-05": "2026-04-15"}
         targets = determine_calibration_targets(
             today=date(2026, 5, 2),
             available_months=["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
             log=log,
         )
-        self.assertEqual(targets, ["2026-02", "2026-04", "2026-05"])
+        self.assertEqual(targets, ["2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05"])
 
     def test_january_year_boundary(self) -> None:
         log = {"2025-12": "2025-12-30", "2026-01": "2026-01-15"}

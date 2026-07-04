@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "python3 scripts/build_web_data.py && vite build",
+    "build": "python3 scripts/build_web_data.py && python3 scripts/build_notes_corpus.py && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

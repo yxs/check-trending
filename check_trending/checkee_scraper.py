@@ -48,8 +48,6 @@ DETAIL_TABLE_END_MARKER = "<" + "/table>"
 
 TERMINAL_STATUSES = frozenset({"Clear", "Reject"})
 
-DEFAULT_START_DATE = date(2025, 7, 1)
-
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -166,6 +164,51 @@ class TableParser(HTMLParser):
 
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", unescape(value)).strip()
+
+
+def normalize_note_for_compare(value: str) -> str:
+    return re.sub(r"\s+", "", value).strip()
+
+
+def merge_listing_record(
+    existing: dict[str, Any] | None,
+    listing: CaseRecord,
+    *,
+    observed_date: str,
+) -> tuple[dict[str, Any], dict[str, bool]]:
+    record = listing.to_dict()
+    detail = dict((existing or {}).get("detail") or {})
+    old_status = (existing or {}).get("status")
+    old_note = str(detail.get("Note") or "").strip()
+    listing_note = ""
+    if listing.detail:
+        listing_note = str(listing.detail.get("Note") or "").strip()
+
+    note_changed = False
+    if listing_note:
+        if old_note and normalize_note_for_compare(old_note) == normalize_note_for_compare(listing_note):
+            detail["Note"] = old_note
+        else:
+            note_changed = old_note != listing_note
+            detail["Note"] = listing_note
+            if note_changed:
+                detail["Note Updated At"] = observed_date
+    elif "Note" in detail:
+        note_changed = True
+        detail.pop("Note", None)
+        detail["Note Updated At"] = observed_date
+
+    if detail or listing_note:
+        detail["case_number"] = listing.case_number
+        detail["Status"] = listing.status
+        record["detail"] = detail
+    else:
+        record["detail"] = None
+
+    return record, {
+        "status_changed": existing is not None and old_status != listing.status,
+        "note_changed": note_changed,
+    }
 
 
 def parse_month_page(
@@ -397,15 +440,12 @@ def determine_calibration_targets(
     available_months: Iterable[str],
     log: dict[str, str],
 ) -> list[str]:
-    current = f"{today.year:04d}-{today.month:02d}"
-    prev = previous_month_label(current)
+    _ = today, log
+    return sorted(set(available_months))
 
-    must = {current, prev}
-    available = set(available_months) | must
-    needs_first_calibration = {m for m in available if m not in log}
 
-    targets = (must | needs_first_calibration) & available
-    return sorted(targets)
+def default_calibration_window(today: date) -> tuple[date, date]:
+    return date(today.year - 2, 1, 1), today
 
 
 class PoliteHttpClient:
@@ -751,27 +791,31 @@ def crawl_calibrate(
 
     listing_ids: set[str] = set()
     listing_records: dict[str, CaseRecord] = {}
+    new_from_listing: list[str] = []
+    status_changed_from_listing: list[str] = []
+    note_changed_from_listing: list[str] = []
     for cases in listings_collected.values():
         for c in cases:
             listing_ids.add(c.case_number)
             listing_records[c.case_number] = c
-
-    missing = sorted(listing_ids - set(canonical_by_number.keys()), key=lambda v: int(v))
-    print(f"calibrate_missing_from_canonical count={len(missing)}", flush=True)
-
-    fetched_missing: list[str] = []
-    for case_number in missing:
-        try:
-            html = fetch_and_cache_detail(case_number, detail_dir, detail_client)
-        except FetchError:
-            print(f"calibrate_fetch_failed case={case_number}", flush=True)
-            continue
-        detail = parse_detail_page(html, case_number)
-        record = case_from_detail(detail, start_date, end_date)
-        if record is None:
-            record = listing_records[case_number]
-        canonical_by_number[case_number] = record.to_dict()
-        fetched_missing.append(case_number)
+            existing = canonical_by_number.get(c.case_number)
+            merged, changed = merge_listing_record(
+                existing,
+                c,
+                observed_date=today_iso,
+            )
+            if existing is None:
+                new_from_listing.append(c.case_number)
+            if changed["status_changed"]:
+                status_changed_from_listing.append(c.case_number)
+                print(
+                    f"calibrate_status_change case={c.case_number} "
+                    f"{existing.get('status') if existing else None}→{c.status}",
+                    flush=True,
+                )
+            if changed["note_changed"]:
+                note_changed_from_listing.append(c.case_number)
+            canonical_by_number[c.case_number] = merged
 
     merged = sorted(
         canonical_by_number.values(),
@@ -790,9 +834,9 @@ def crawl_calibrate(
         "calibrated_months": targets,
         "skipped_already_calibrated_months": skipped,
         "listing_cases_total": len(listing_ids),
-        "missing_from_canonical": missing,
-        "newly_added_to_canonical": fetched_missing,
-        "still_missing": sorted(set(missing) - set(fetched_missing), key=lambda v: int(v)),
+        "newly_added_to_canonical": sort_case_numbers(new_from_listing),
+        "status_changed_from_listing": sort_case_numbers(status_changed_from_listing),
+        "note_changed_from_listing": sort_case_numbers(note_changed_from_listing),
     }
     report_dir = output_dir / RECONCILIATION_REPORTS_DIR
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -895,7 +939,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "daily",
         help="Path 1: detail-page refresh (CI). Frontier probe + Pending bucket.",
     )
-    daily.add_argument("--start-date", default=DEFAULT_START_DATE.isoformat())
+    daily.add_argument("--start-date", default=default_calibration_window(date.today())[0].isoformat())
     daily.add_argument("--end-date", default=date.today().isoformat())
     daily.add_argument("--output-dir", default="data/checkee")
     daily.add_argument(
@@ -921,7 +965,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "calibrate",
         help="Path 2: monthly-listing reconciliation (local, headed browser).",
     )
-    calib.add_argument("--start-date", default=DEFAULT_START_DATE.isoformat())
+    calib.add_argument("--start-date", default=None)
     calib.add_argument("--end-date", default=date.today().isoformat())
     calib.add_argument("--output-dir", default="data/checkee")
     calib.add_argument(
@@ -938,8 +982,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+    if args.start_date is None:
+        start_date = default_calibration_window(end_date)[0]
+    else:
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date()
     output_dir = Path(args.output_dir)
 
     if args.command == "daily":
