@@ -9,7 +9,20 @@ from pathlib import Path
 from typing import Any
 
 CANONICAL_SOURCE = Path("data/checkee/checkee_cases.json")
+SUMMARY_SOURCE = Path("data/checkee/crawl_summary.json")
 TARGET = Path("public/data/notes.json")
+
+
+def shared_window(dates: list[str]) -> tuple[str, str]:
+    """Display range shared with the dashboard: prefer crawl_summary.json so both
+    pages show the same window; fall back to the corpus min/max if it is absent."""
+    if SUMMARY_SOURCE.exists():
+        try:
+            summary = json.loads(SUMMARY_SOURCE.read_text(encoding="utf-8"))
+            return summary["start_date"], summary["end_date"]
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return min(dates), max(dates)
 
 
 def note_record_from_harvest(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -81,11 +94,12 @@ def build_notes_cases() -> list[dict[str, Any]]:
 def main() -> None:
     cases = build_notes_cases()
     dates = [record["cd"] for record in cases if record["cd"]]
+    start_date, end_date = shared_window(dates)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "count": len(cases),
-        "start_date": min(dates),
-        "end_date": max(dates),
+        "start_date": start_date,
+        "end_date": end_date,
         "cases": cases,
     }
     blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
