@@ -2,7 +2,6 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import {
-  buildLongCheckNoteSummary,
   bucketClearSeries,
   buildClearWaitScatter,
   buildDailyClearSeries,
@@ -54,7 +53,6 @@ const TIME_RANGE_MAP: Record<string, TimeRangeDays> = {
 };
 const CHART_PADDING = { top: 24, right: 56, bottom: 42, left: 48 } as const;
 const DETAIL_CAP = 100;
-const LONG_CHECK_DETAIL_CAP = 300;
 const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label: string }>> = {
   all: [{ value: 'all', label: '全部类型' }],
   b: [{ value: 'all', label: 'B1 + B2' }],
@@ -195,9 +193,8 @@ export default function App() {
     }
   }, [filters, route, detailStatus, detailSort]);
 
-  // Drop cases still Pending past 2 years everywhere — they are resolved-offline/abandoned, not real backlog.
+  // Drop cases still Pending past 1 year everywhere — they are resolved-offline/abandoned, not real backlog.
   const cases = useMemo(() => (data ? data.cases.filter((record) => !isStalePending(record)) : []), [data]);
-  const allCases = data?.cases ?? [];
 
   const consulates = useMemo(
     () => [...new Set(cases.map((record) => record.consulate))].sort((left, right) => left.localeCompare(right)),
@@ -208,10 +205,6 @@ export default function App() {
   const backlogBase = useMemo(
     () => filterCases(cases, { ...filters, timeRangeDays: 'all' }),
     [cases, filters],
-  );
-  const longCheckBase = useMemo(
-    () => filterCases(allCases, { ...filters, timeRangeDays: 'all' }),
-    [allCases, filters],
   );
   const clearSeries = useMemo(() => buildDailyClearSeries(filteredCases), [filteredCases]);
   const baseGranularity = granularityForRange(filters.timeRangeDays);
@@ -226,15 +219,9 @@ export default function App() {
     () => movingAverage(chartSeries, trailingWindowForGranularity(chartGranularity)),
     [chartSeries, chartGranularity],
   );
-  const longCheckNoteSummary = useMemo(
-    () => buildLongCheckNoteSummary(longCheckBase, data?.summary.end_date ?? ''),
-    [longCheckBase, data?.summary.end_date],
-  );
   const detailView = useMemo(() => {
     let list: CaseRecord[];
-    if (detailStatus === 'longCheckNotes') {
-      list = longCheckNoteSummary.candidates;
-    } else if (detailStatus === 'over1y') {
+    if (detailStatus === 'over1y') {
       list = clearedWaitInRange(backlogBase, LONG_CHECK_PENDING_MAX_DAYS, Infinity);
     } else if (detailStatus === 'over180') {
       list = clearedWaitInRange(backlogBase, CLEAR_SCATTER_MAX_DAYS, LONG_CHECK_PENDING_MAX_DAYS);
@@ -254,9 +241,6 @@ export default function App() {
         );
       }
     }
-    if (detailStatus === 'longCheckNotes') {
-      return { total: list.length, rows: list.slice(0, LONG_CHECK_DETAIL_CAP), cap: LONG_CHECK_DETAIL_CAP };
-    }
     const dir = detailSort.dir === 'asc' ? 1 : -1;
     const sorted = [...list].sort((left, right) => {
       if (detailSort.key === 'wait') {
@@ -267,7 +251,7 @@ export default function App() {
       return leftValue.localeCompare(rightValue) * dir;
     });
     return { total: sorted.length, rows: sorted.slice(0, DETAIL_CAP), cap: DETAIL_CAP };
-  }, [filteredCases, backlogBase, longCheckNoteSummary.candidates, detailStatus, filters.selectedDate, chartFocus, detailSort]);
+  }, [filteredCases, backlogBase, detailStatus, filters.selectedDate, chartFocus, detailSort]);
   const scopeLabel = filters.selectedDate
     ? `完成于 ${filters.selectedDate}`
     : chartFocus
@@ -340,10 +324,6 @@ export default function App() {
               event.preventDefault();
               navigate(DONATE_PATH);
             }}>Donate · 支持本站</a>
-            <a className="long-check-link" href="?ds=longCheckNotes" onClick={(event) => {
-              event.preventDefault();
-              showCohort('longCheckNotes');
-            }}>Selected Long Check Note</a>
             <ThemeSwitch preference={themePreference} onChange={setThemePreference} />
           </nav>
         </div>
@@ -369,7 +349,7 @@ export default function App() {
             </span>
             <span className="notes-cta-text">
               <strong>Case Note 全文搜索</strong>
-              <span>搜 2017 年至今的 Case Note</span>
+              <span>搜 2014 年至今的 Case Note</span>
             </span>
             <span className="notes-cta-arrow" aria-hidden="true">›</span>
           </a>
@@ -480,15 +460,12 @@ export default function App() {
             <option value="Clear">Clear</option>
             <option value="Reject">Reject</option>
             <option value="Pending">Pending</option>
-            <option value="longCheckNotes">Selected Long Check Note</option>
             <option value="over180">180 to 365</option>
             <option value="over1y">&gt;365</option>
           </Select>
         </div>
         <p className="note-count muted">
-          {detailStatus === 'longCheckNotes'
-            ? 'Selected Long Check Note · '
-            : detailStatus === 'over1y'
+          {detailStatus === 'over1y'
             ? '>365 · '
             : detailStatus === 'over180'
               ? '180 to 365 · '
@@ -528,7 +505,7 @@ export default function App() {
 
   function handleBarClick(date: string) {
     setDetailStatus((current) =>
-      current === 'over1y' || current === 'over180' || current === 'Pending' || current === 'longCheckNotes'
+      current === 'over1y' || current === 'over180' || current === 'Pending'
         ? 'all'
         : current,
     );
@@ -545,7 +522,7 @@ export default function App() {
   }
 
   function selectDetailStatus(value: DetailStatus) {
-    if (value === 'over1y' || value === 'over180' || value === 'Pending' || value === 'longCheckNotes') {
+    if (value === 'over1y' || value === 'over180' || value === 'Pending') {
       setChartFocus(null);
       updateFilters({ selectedDate: null });
       setDetailSort({ key: 'wait', dir: 'desc' });
@@ -984,14 +961,14 @@ function CaseTable({
         <tbody>
           {cases.map((record) => (
             <tr key={record.case_number}>
-              <td><a href={detailUrl(record.case_number)} target="_blank" rel="noreferrer">{record.case_number}</a></td>
-              <td>{record.visa_type}</td>
-              <td>{record.consulate} / {getRegionGroup(record.consulate) === 'mainland' ? '大陆' : '海外'}</td>
-              <td><span className={`status-tag status-${record.status}`}>{record.status}</span></td>
-              <td>{record.check_date}</td>
-              <td>{record.complete_date ?? '-'}</td>
-              <td>{record.waiting_days ?? '-'} 天</td>
-              <td className="note-cell"><div className="note-clip">{notes ? (notes[record.case_number] || '无') : ''}</div></td>
+              <td data-label="Case"><a href={detailUrl(record.case_number)} target="_blank" rel="noreferrer">{record.case_number}</a></td>
+              <td data-label="签证">{record.visa_type}</td>
+              <td data-label="领馆">{record.consulate} / {getRegionGroup(record.consulate) === 'mainland' ? '大陆' : '海外'}</td>
+              <td data-label="状态"><span className={`status-tag status-${record.status}`}>{record.status}</span></td>
+              <td data-label="Check">{record.check_date}</td>
+              <td data-label="Clear">{record.complete_date ?? '-'}</td>
+              <td data-label="等待">{record.waiting_days ?? '-'} 天</td>
+              <td className="note-cell" data-label="Note"><div className="note-clip">{notes ? (notes[record.case_number] || '无') : ''}</div></td>
             </tr>
           ))}
         </tbody>

@@ -190,30 +190,6 @@ h2 {
   background: var(--surface-muted);
 }
 
-.hero-links a.long-check-link {
-  border-color: rgba(194, 65, 12, 0.34);
-  background: rgba(251, 146, 60, 0.12);
-  color: #c2410c;
-}
-
-.hero-links a.long-check-link:hover {
-  border-color: rgba(194, 65, 12, 0.56);
-  background: rgba(251, 146, 60, 0.2);
-  color: #9a3412;
-}
-
-:root[data-theme="dark"] .hero-links a.long-check-link {
-  border-color: rgba(251, 146, 60, 0.38);
-  background: rgba(251, 146, 60, 0.16);
-  color: #fdba74;
-}
-
-:root[data-theme="dark"] .hero-links a.long-check-link:hover {
-  border-color: rgba(251, 146, 60, 0.64);
-  background: rgba(251, 146, 60, 0.24);
-  color: #fed7aa;
-}
-
 .freshness {
   min-width: 220px;
   padding: 18px 22px;
@@ -1037,14 +1013,71 @@ a {
     padding: 6px 6px 2px;
   }
 
-  .note-cell {
-    min-width: 220px;
-    max-width: 240px;
+  .table-wrap {
+    overflow: visible;
+    max-height: none;
+    border: none;
+    border-radius: 0;
+  }
+
+  .table-wrap thead {
+    display: none;
+  }
+
+  .table-wrap table,
+  .table-wrap tbody,
+  .table-wrap tr,
+  .table-wrap td {
+    display: block;
+    width: auto;
+  }
+
+  .table-wrap tbody tr,
+  .table-wrap tbody tr:nth-child(even) {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: var(--surface);
+  }
+
+  .table-wrap td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 3px 0;
+    border-bottom: none;
+    text-align: right;
+  }
+
+  .table-wrap td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .table-wrap td.note-cell {
+    display: block;
+    min-width: 0;
+    max-width: none;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border-soft);
+    text-align: left;
+  }
+
+  .table-wrap td.note-cell::before {
+    display: block;
+    margin-bottom: 3px;
   }
 
   .note-clip {
     display: -webkit-box;
-    -webkit-line-clamp: 5;
+    -webkit-line-clamp: 6;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }

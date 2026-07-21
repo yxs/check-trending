@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildLongCheckNoteSummary,
   bucketClearSeries,
   buildClearWaitScatter,
   buildDailyClearSeries,
@@ -75,83 +74,6 @@ describe('clear wait scatter', () => {
       days: [],
       total: 0,
     });
-  });
-});
-
-describe('long check notes', () => {
-  it('keeps all statuses between 180 and 730 days with notes and ranks semantic-rich notes first', () => {
-    const records = [
-      makeCase({
-        case_number: 'pending-rich',
-        check_date: '2026-01-20',
-        status: 'Pending',
-        complete_date: null,
-        waiting_days: 220,
-        has_note: true,
-        note_richness_score: 8,
-      }),
-      makeCase({
-        case_number: 'clear-richest',
-        check_date: '2026-01-10',
-        status: 'Clear',
-        waiting_days: 260,
-        has_note: true,
-        note_richness_score: 12,
-      }),
-      makeCase({
-        case_number: 'reject-mid',
-        check_date: '2026-02-01',
-        status: 'Reject',
-        waiting_days: 240,
-        has_note: true,
-        note_richness_score: 6,
-      }),
-      makeCase({
-        case_number: 'too-new',
-        check_date: '2026-03-01',
-        status: 'Pending',
-        complete_date: null,
-        waiting_days: 179,
-        has_note: true,
-        note_richness_score: 12,
-      }),
-      makeCase({
-        case_number: 'too-old',
-        check_date: '2025-03-01',
-        status: 'Pending',
-        complete_date: null,
-        waiting_days: 730,
-        has_note: true,
-        note_richness_score: 12,
-      }),
-      makeCase({
-        case_number: 'no-note',
-        check_date: '2026-03-01',
-        status: 'Pending',
-        complete_date: null,
-        waiting_days: 220,
-        has_note: false,
-        note_richness_score: 12,
-      }),
-      makeCase({
-        case_number: 'outside-recent-window',
-        check_date: '2023-12-01',
-        status: 'Clear',
-        waiting_days: 260,
-        has_note: true,
-        note_richness_score: 12,
-      }),
-    ];
-
-    const summary = buildLongCheckNoteSummary(records, '2026-06-28');
-
-    expect(summary.total).toBe(3);
-    expect(summary.richTotal).toBe(2);
-    expect(summary.candidates.map((record) => record.case_number)).toEqual([
-      'clear-richest',
-      'pending-rich',
-      'reject-mid',
-    ]);
   });
 });
 

@@ -130,7 +130,7 @@ export function NotesPage({
           <p className="eyebrow">Case Note 搜索</p>
           <h1>Case Note 全文检索</h1>
           <p className="lede">
-            搜索 2017 年至今所有带 Note 的 Checkee 样本。
+            搜索 2014 年至今所有带 Note 的 Checkee 样本。
           </p>
           <nav className="hero-links" aria-label="站点链接">
             <a

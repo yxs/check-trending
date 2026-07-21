@@ -21,7 +21,6 @@ const DETAIL_STATUS_VALUES: DetailStatus[] = [
   'Pending',
   'over180',
   'over1y',
-  'longCheckNotes',
 ];
 const SORT_KEYS: DetailSort['key'][] = ['check', 'clear', 'wait'];
 const DEFAULT_DETAIL_SORT: DetailSort = { key: 'clear', dir: 'desc' };
@@ -61,8 +60,7 @@ export function readViewStateFromSearch(search: string, defaultFilters: Filters)
   const cohortMode =
     detailStatus === 'over1y' ||
     detailStatus === 'over180' ||
-    detailStatus === 'Pending' ||
-    detailStatus === 'longCheckNotes';
+    detailStatus === 'Pending';
   const selectedDate = cohortMode ? null : normalizeDate(params.get('s'));
 
   return {
