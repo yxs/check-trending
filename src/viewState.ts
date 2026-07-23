@@ -9,6 +9,7 @@ import type {
 
 type ViewState = {
   filters: Filters;
+  detailPage: number;
   detailStatus: DetailStatus;
   detailSort: DetailSort;
 };
@@ -55,6 +56,7 @@ export function readViewStateFromSearch(search: string, defaultFilters: Filters)
   const timeRangeDays = parseTimeRange(params.get('t'), defaultFilters.timeRangeDays);
   const detailStatus = pickOrDefault(params.get('ds'), DETAIL_STATUS_VALUES, 'all');
   const detailSort = parseDetailSort(params.get('sort'));
+  const detailPage = parseDetailPage(params.get('p'));
   // over1y / Pending are global cohorts that ignore a selected date; drop a stray ?s= so
   // the chart and the detail table can't disagree on a shared/hand-edited URL.
   const cohortMode =
@@ -64,6 +66,7 @@ export function readViewStateFromSearch(search: string, defaultFilters: Filters)
   const selectedDate = cohortMode ? null : normalizeDate(params.get('s'));
 
   return {
+    detailPage,
     filters: {
       region,
       selectedDate,
@@ -91,6 +94,7 @@ export function buildSearchFromViewState(
   defaultFilters: Filters,
   detailStatus: DetailStatus = 'all',
   detailSort: DetailSort = DEFAULT_DETAIL_SORT,
+  detailPage = 1,
 ): string {
   const params = new URLSearchParams();
 
@@ -115,8 +119,19 @@ export function buildSearchFromViewState(
   if (detailSort.key !== DEFAULT_DETAIL_SORT.key || detailSort.dir !== DEFAULT_DETAIL_SORT.dir) {
     params.set('sort', `${detailSort.key}-${detailSort.dir}`);
   }
+  if (Number.isInteger(detailPage) && detailPage > 1) {
+    params.set('p', String(detailPage));
+  }
 
   return params.toString();
+}
+
+function parseDetailPage(value: string | null): number {
+  if (!value || !/^\d+$/.test(value)) {
+    return 1;
+  }
+  const page = Number(value);
+  return Number.isSafeInteger(page) && page > 0 ? page : 1;
 }
 
 function pickOrDefault<T extends string>(value: string | null, options: T[], fallback: T): T {

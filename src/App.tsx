@@ -29,6 +29,7 @@ import type {
   WebData,
 } from './types';
 import { DONATE_PATH, DONATE_QR_PATH, GITHUB_URL, NOTES_PATH } from './site';
+import { DETAIL_PAGE_SIZE, getPaginationItems, paginate } from './pagination';
 
 const NotesPage = lazy(() => import('./NotesPage'));
 import { THEME_STORAGE_KEY, parseThemePreference, resolveTheme, type ThemePreference } from './theme';
@@ -52,7 +53,6 @@ const TIME_RANGE_MAP: Record<string, TimeRangeDays> = {
   '730': 730,
 };
 const CHART_PADDING = { top: 24, right: 56, bottom: 42, left: 48 } as const;
-const DETAIL_CAP = 100;
 const VISA_SUBTYPE_OPTIONS: Record<VisaGroup, Array<{ value: VisaSubtype; label: string }>> = {
   all: [{ value: 'all', label: '全部类型' }],
   b: [{ value: 'all', label: 'B1 + B2' }],
@@ -83,6 +83,7 @@ export default function App() {
   const [chartFocus, setChartFocus] = useState<{ start: string; end: string; label: string } | null>(null);
   const [detailStatus, setDetailStatus] = useState<DetailStatus>(initialViewState.detailStatus);
   const [detailSort, setDetailSort] = useState<DetailSort>(initialViewState.detailSort);
+  const [detailPage, setDetailPage] = useState(initialViewState.detailPage);
   const detailRef = useRef<HTMLElement | null>(null);
   const notesRequested = useRef(false);
   const [mobileFiltersExpanded, setMobileFiltersExpanded] = useState(false);
@@ -175,6 +176,7 @@ export default function App() {
       setFilters(nextState.filters);
       setDetailStatus(nextState.detailStatus);
       setDetailSort(nextState.detailSort);
+      setDetailPage(nextState.detailPage);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -184,14 +186,14 @@ export default function App() {
     if (route === DONATE_PATH || route === NOTES_PATH) {
       return;
     }
-    const search = buildSearchFromViewState(filters, DEFAULT_FILTERS, detailStatus, detailSort);
+    const search = buildSearchFromViewState(filters, DEFAULT_FILTERS, detailStatus, detailSort, detailPage);
     const path = window.location.pathname;
     const nextUrl = search ? `${path}?${search}` : path;
     const currentUrl = `${path}${window.location.search}`;
     if (currentUrl !== nextUrl) {
       window.history.replaceState({}, '', nextUrl);
     }
-  }, [filters, route, detailStatus, detailSort]);
+  }, [filters, route, detailStatus, detailSort, detailPage]);
 
   // Drop cases still Pending past 1 year everywhere — they are resolved-offline/abandoned, not real backlog.
   const cases = useMemo(() => (data ? data.cases.filter((record) => !isStalePending(record)) : []), [data]);
@@ -250,8 +252,14 @@ export default function App() {
       const rightValue = detailSort.key === 'check' ? right.check_date : right.complete_date ?? '';
       return leftValue.localeCompare(rightValue) * dir;
     });
-    return { total: sorted.length, rows: sorted.slice(0, DETAIL_CAP), cap: DETAIL_CAP };
-  }, [filteredCases, backlogBase, detailStatus, filters.selectedDate, chartFocus, detailSort]);
+    return paginate(sorted, detailPage, DETAIL_PAGE_SIZE);
+  }, [filteredCases, backlogBase, detailStatus, filters.selectedDate, chartFocus, detailSort, detailPage]);
+
+  useEffect(() => {
+    if (data && detailPage !== detailView.page) {
+      setDetailPage(detailView.page);
+    }
+  }, [data, detailPage, detailView.page]);
   const scopeLabel = filters.selectedDate
     ? `完成于 ${filters.selectedDate}`
     : chartFocus
@@ -434,7 +442,7 @@ export default function App() {
           </div>
           <div className="chart-actions">
             {chartFocus && (
-              <button className="ghost-button" onClick={() => setChartFocus(null)}>
+              <button className="ghost-button" onClick={clearChartFocus}>
                 ← 返回{baseGranularity === 'month' ? '月度' : '周'}视图
               </button>
             )}
@@ -474,9 +482,17 @@ export default function App() {
                 : scopeLabel
                   ? `${scopeLabel} · `
                   : ''}
-          共 {numberFormatter.format(detailView.total)} 条{detailStatus === 'all' && !scopeLabel ? '有效样本' : ''}{detailView.total > detailView.cap ? `，显示前 ${detailView.cap}` : ''}
+          共 {numberFormatter.format(detailView.total)} 条{detailStatus === 'all' && !scopeLabel ? '有效样本' : ''}
+          {detailView.total > DETAIL_PAGE_SIZE ? `，当前显示第 ${detailView.start}–${detailView.end} 条` : ''}
         </p>
-        <CaseTable cases={detailView.rows} notes={caseNotes} sort={detailSort} onSort={toggleDetailSort} />
+        <CaseTable key={detailView.page} cases={detailView.rows} notes={caseNotes} sort={detailSort} onSort={toggleDetailSort} />
+        {detailView.pageCount > 1 && (
+          <CasePagination
+            currentPage={detailView.page}
+            pageCount={detailView.pageCount}
+            onPageChange={changeDetailPage}
+          />
+        )}
       </section>
       <footer className="footer-note" aria-label="数据来源与外部工具">
         <span className="footer-title">数据来源与工具</span>
@@ -494,16 +510,19 @@ export default function App() {
   );
 
   function updateFilters(update: Partial<Filters>) {
+    setDetailPage(1);
     setFilters((current) => ({ ...current, ...update }));
   }
 
   function toggleDetailSort(key: DetailSort['key']) {
+    setDetailPage(1);
     setDetailSort((current) =>
       current.key === key ? { key, dir: current.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' },
     );
   }
 
   function handleBarClick(date: string) {
+    setDetailPage(1);
     setDetailStatus((current) =>
       current === 'over1y' || current === 'over180' || current === 'Pending'
         ? 'all'
@@ -522,6 +541,7 @@ export default function App() {
   }
 
   function selectDetailStatus(value: DetailStatus) {
+    setDetailPage(1);
     if (value === 'over1y' || value === 'over180' || value === 'Pending') {
       setChartFocus(null);
       updateFilters({ selectedDate: null });
@@ -535,10 +555,69 @@ export default function App() {
     requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
+  function clearChartFocus() {
+    setDetailPage(1);
+    setChartFocus(null);
+  }
+
+  function changeDetailPage(page: number) {
+    setDetailPage(page);
+    requestAnimationFrame(() => detailRef.current?.scrollIntoView({ block: 'start' }));
+  }
+
   function navigate(path: string) {
     window.history.pushState({}, '', path);
     setRoute(path);
   }
+}
+
+function CasePagination({
+  currentPage,
+  onPageChange,
+  pageCount,
+}: {
+  currentPage: number;
+  onPageChange: (page: number) => void;
+  pageCount: number;
+}) {
+  const items = getPaginationItems(currentPage, pageCount);
+  return (
+    <nav className="detail-pagination" aria-label="Case 明细分页">
+      <button
+        type="button"
+        className="pagination-button pagination-step"
+        disabled={currentPage === 1}
+        onClick={() => onPageChange(currentPage - 1)}
+      >
+        上一页
+      </button>
+      <div className="pagination-pages">
+        {items.map((item, index) => item === 'ellipsis' ? (
+          <span key={`ellipsis-${index}`} className="pagination-ellipsis" aria-hidden="true">…</span>
+        ) : (
+          <button
+            type="button"
+            key={item}
+            className={item === currentPage ? 'pagination-button active' : 'pagination-button'}
+            aria-current={item === currentPage ? 'page' : undefined}
+            aria-label={`第 ${item} 页`}
+            onClick={() => onPageChange(item)}
+          >
+            {item}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="pagination-button pagination-step"
+        disabled={currentPage === pageCount}
+        onClick={() => onPageChange(currentPage + 1)}
+      >
+        下一页
+      </button>
+      <span className="pagination-summary">第 {currentPage} / {pageCount} 页</span>
+    </nav>
+  );
 }
 
 function addDaysISO(date: string, days: number): string {

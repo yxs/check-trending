@@ -19,6 +19,7 @@ describe('view state URL parsing', () => {
     );
 
     expect(result).toEqual({
+      detailPage: 1,
       filters: {
         region: 'Tokyo',
         selectedDate: '2026-04-30',
@@ -38,6 +39,7 @@ describe('view state URL parsing', () => {
     );
 
     expect(result).toEqual({
+      detailPage: 1,
       filters: {
         ...DEFAULT_FILTERS,
         visaGroup: 'b',
@@ -80,6 +82,7 @@ describe('view state URL serialization', () => {
     const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS);
 
     expect(parsed).toEqual({
+      detailPage: 1,
       filters: {
         ...DEFAULT_FILTERS,
         region: 'Toronto',
@@ -93,11 +96,24 @@ describe('view state URL serialization', () => {
   });
 
   it('round-trips detail status and sort in the URL', () => {
-    const search = buildSearchFromViewState(DEFAULT_FILTERS, DEFAULT_FILTERS, 'over1y', { key: 'wait', dir: 'asc' });
-    expect(search).toBe('ds=over1y&sort=wait-asc');
+    const search = buildSearchFromViewState(
+      DEFAULT_FILTERS,
+      DEFAULT_FILTERS,
+      'over1y',
+      { key: 'wait', dir: 'asc' },
+      3,
+    );
+    expect(search).toBe('ds=over1y&sort=wait-asc&p=3');
 
     const parsed = readViewStateFromSearch(search, DEFAULT_FILTERS);
     expect(parsed.detailStatus).toBe('over1y');
     expect(parsed.detailSort).toEqual({ key: 'wait', dir: 'asc' });
+    expect(parsed.detailPage).toBe(3);
+  });
+
+  it('ignores invalid detail page numbers', () => {
+    for (const page of ['0', '-2', '1.5', 'abc']) {
+      expect(readViewStateFromSearch(`?p=${page}`, DEFAULT_FILTERS).detailPage).toBe(1);
+    }
   });
 });
